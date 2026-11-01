@@ -1,0 +1,9 @@
+[project]
+name = "keqi-planner"
+version = "0.2.0"
+description = "Local class timetable and deadline aggregator for Chaoxing and Zhihuishu"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

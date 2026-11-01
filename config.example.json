@@ -1,0 +1,7 @@
+{
+  "xxt_command": ["<项目根目录>\\.deps\\xxt-env\\Scripts\\python.exe", "-m", "xuexitong_mcp.cli"],
+  "xxt_cwd": "<项目根目录>\\.deps\\xuexitong",
+  "zhs_python": "<项目根目录>\\.deps\\zhs-env\\Scripts\\python.exe",
+  "auth_python": null,
+  "sync_interval_minutes": 30
+}
