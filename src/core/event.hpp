@@ -30,6 +30,14 @@ struct Event {
     std::int64_t end = 0;    // 终末时间（epoch 秒，不含）；Deadline 事件 start == end
     std::string title;       // 标题；日视图重叠时只展示前 3-5 个字符
     std::string note;        // 注释；点开详情时展示
+
+    // 平台同步扩展字段（默认空，不影响本地手动/HTTP 提交的事件）。
+    std::string source;      // 来源："学习通" / "智慧树" / 空（本地）
+    std::string course;      // 所属课程名
+    std::string location;    // 地点
+    std::string teacher;     // 教师
+    std::string url;         // 平台详情链接
+    bool done = false;       // 平台侧是否已完成
 };
 
 // 判定两个时间区间是否重叠（半开区间 [start, end) 口径）。

@@ -20,6 +20,7 @@ add_library(bp_api STATIC
     src/api/registry.cpp
     src/api/json_io.cpp
     src/api/http_server.cpp
+    src/api/sync.cpp
 )
 target_link_libraries(bp_api PUBLIC bp_core PRIVATE ws2_32)
 

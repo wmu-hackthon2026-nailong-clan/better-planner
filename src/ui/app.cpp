@@ -6,15 +6,18 @@
 #include <dwrite.h>
 #include <wincodec.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "api/http_server.hpp"
 #include "api/registry.hpp"
+#include "api/sync.hpp"
 #include "api/types.hpp"
 #include "core/event.hpp"
 #include "core/layout.hpp"
@@ -35,6 +38,7 @@ constexpr float kTitleLines = 22.0f;
 constexpr float kTimeLines = 16.0f;
 constexpr float kTopBar = 64.0f;
 constexpr UINT kEventsChangedMessage = WM_APP + 1;
+constexpr UINT kSyncDoneMessage = WM_APP + 2;
 
 constexpr float kPixelsPerHour = 80.0f;
 constexpr float kAxisWidth = 62.0f;
@@ -53,6 +57,8 @@ enum class ViewMode { Day, Week, Month };
 ViewMode g_view = ViewMode::Day;
 int g_selectedDay = 0;
 int g_scrollY = 0;
+std::atomic<bool> g_syncing{false};
+std::wstring g_syncStatus = L"";
 
 struct HitBlock {
     D2D1_RECT_F rect;
@@ -115,8 +121,25 @@ std::wstring detailText(const std::vector<bp::Event>& events) {
     stream << L"\u5171 " << events.size() << L" \u4e2a\u4e8b\u4ef6\uff1a";
     for (const auto& event : events) {
         stream << L"\n\n" << toWide(event.title) << L"\n"
-               << spanText(event) << L"\n"
-               << toWide(event.note);
+               << spanText(event);
+        if (!event.course.empty()) {
+            stream << L"\n" << toWide(event.course);
+        }
+        if (!event.location.empty()) {
+            stream << L" \u00b7 " << toWide(event.location);
+        }
+        if (!event.teacher.empty()) {
+            stream << L" \u00b7 " << toWide(event.teacher);
+        }
+        if (!event.source.empty()) {
+            stream << L"\n\u6765\u6e90\uff1a" << toWide(event.source);
+        }
+        if (!event.note.empty()) {
+            stream << L"\n" << toWide(event.note);
+        }
+        if (event.done) {
+            stream << L"\n[\u5df2\u5b8c\u6210]";
+        }
     }
     return stream.str();
 }
@@ -260,6 +283,19 @@ void RenderTopBar(const Brushes& b, const D2D1_RECT_F& buttonRect) {
     g_target->FillRectangle(exportRect, b.fill);
     g_target->DrawRectangle(exportRect, b.edge, 0.5f);
     DrawTextLine(L"\u5bfc\u51fa PNG", exportRect, g_axisFormat, b.text);
+
+    const D2D1_RECT_F syncRect = D2D1::RectF(132.0f, 12.0f, 188.0f, 40.0f);
+    g_target->FillRectangle(syncRect, b.fill);
+    g_target->DrawRectangle(syncRect, b.edge, 0.5f);
+    const std::wstring syncLabel =
+        g_syncing ? L"\u540c\u6b65\u4e2d\u2026" : L"\u540c\u6b65";
+    DrawTextLine(syncLabel, syncRect, g_axisFormat, b.text);
+
+    if (!g_syncStatus.empty()) {
+        DrawTextLine(g_syncStatus,
+                     D2D1::RectF(200.0f, 12.0f, 800.0f, 40.0f), g_axisFormat,
+                     b.dim);
+    }
 }
 
 // 时间轴总跨度覆盖完整一天，超出 7:00–22:00 的事件也可滚动看到。
@@ -825,6 +861,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 return 0;
             }
+            if (mx >= 132.0f && mx <= 188.0f && my >= 12.0f && my <= 40.0f) {
+                if (!g_syncing) {
+                    g_syncing = true;
+                    g_syncStatus = L"";
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    const auto store =
+                        bp::api::Registry::instance().store();
+                    const bp::api::SyncConfig config =
+                        bp::api::loadSyncConfig();
+                    std::thread([hwnd, store, config] {
+                        bp::api::syncAll(config, store, {});
+                        PostMessageW(hwnd, kSyncDoneMessage, 0, 0);
+                    }).detach();
+                }
+                return 0;
+            }
             if (g_view == ViewMode::Day) {
                 for (const auto& hit : g_hits) {
                     if (mx >= hit.rect.left && mx <= hit.rect.right &&
@@ -851,6 +903,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case kEventsChangedMessage:
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case kSyncDoneMessage:
+            g_syncing = false;
+            g_syncStatus = L"\u540c\u6b65\u5b8c\u6210";
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_DESTROY:
