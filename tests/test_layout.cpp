@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "api/json_io.hpp"
+#include "api/timetable.hpp"
 #include "api/types.hpp"
 #include "core/layout.hpp"
 #include "core/queries.hpp"
@@ -237,6 +238,20 @@ void testGroupByDayDeadlineLandsInOwnDay() {
     check(grouped.at(86400).size() == 1, "group deadline: one event");
 }
 
+void testGroupByDayNonAlignedDayStart() {
+    // dayStart 不是 daySeconds 整数倍（模拟 UTC+8 本地 0 点 = 28800），
+    // 分组 key 必须仍以 dayStart 为基准，否则周/月视图查不到事件。
+    const std::int64_t dayStart = 28800;  // 东八区某天 0 点
+    std::vector<Event> events = {
+        makeEvent(dayStart + 3600, dayStart + 7200, "morning"),
+        makeEvent(dayStart + 86400 + 3600, dayStart + 86400 + 7200, "tomorrow"),
+    };
+    const auto grouped = groupByDay(events, dayStart, 86400);
+    check(grouped.count(dayStart) == 1, "group aligned: day0 key");
+    check(grouped.count(dayStart + 86400) == 1, "group aligned: day1 key");
+    check(grouped.at(dayStart).size() == 1, "group aligned: day0 one event");
+}
+
 void testGroupByDayIgnoresEventsBeforeWindow() {
     std::vector<Event> events = {
         makeEvent(-86400, -3600, "past"),
@@ -246,6 +261,50 @@ void testGroupByDayIgnoresEventsBeforeWindow() {
     const auto grouped = groupByDay(events, 0, 86400);
     check(grouped.size() == 1, "group window: one day only");
     check(grouped.at(0).size() == 2, "group window: straddle+in");
+}
+
+void testParseTimetableBasic() {
+    // 学期起始：2026-09-07（周一），epoch 需按本地时区；这里用固定值，
+    // 只需验证展开数量与字段，不必精确到具体日期。
+    const std::string json =
+        "{\"kbList\":["
+        "{\"kcmc\":\"高等数学\",\"xqj\":1,\"zcd\":\"1-16周\","
+        "\"cdmc\":\"一教301\",\"xm\":\"王老师\",\"jcor\":1,\"length\":2},"
+        "{\"kcmc\":\"大学物理\",\"xqj\":3,\"zcd\":\"2-8周(双)\","
+        "\"cdmc\":\"实验楼\",\"xm\":\"李老师\",\"jcs\":\"3-4\"}"
+        "]}";
+    const auto result = bp::api::parseTimetable(json, 0);
+    check(!result.empty, "timetable: parsed");
+    // 高等数学：1-16周 共 16 次。
+    // 大学物理：2-8周(双) = 2,4,6,8 共 4 次。
+    check(result.events.size() == 20, "timetable: 16 + 4 events");
+    bool foundMath = false;
+    bool foundPhysics = false;
+    for (const auto& e : result.events) {
+        if (e.title == "高等数学") {
+            foundMath = true;
+            check(e.course == "高等数学", "timetable: course set");
+            check(e.location == "一教301", "timetable: location set");
+            check(e.teacher == "王老师", "timetable: teacher set");
+            check(e.source == "教务系统", "timetable: source set");
+            check(e.kind == Kind::Schedule, "timetable: schedule kind");
+            check(e.end > e.start, "timetable: span positive");
+        }
+        if (e.title == "大学物理") {
+            foundPhysics = true;
+        }
+    }
+    check(foundMath, "timetable: math present");
+    check(foundPhysics, "timetable: physics present");
+}
+
+void testParseTimetableEmpty() {
+    // 纯外壳 HTML（无 kbList、无数据）应返回 empty 且无事件。
+    const std::string html =
+        "<html><body><div id='coursesTable'></div></body></html>";
+    const auto result = bp::api::parseTimetable(html, 0);
+    check(result.empty, "timetable: empty shell flagged");
+    check(result.events.empty(), "timetable: no events from shell");
 }
 
 void testApiRejectsInvertedSchedule() {
@@ -333,8 +392,14 @@ int main() {
     std::cout << "ok group deadline" << std::endl;
     testGroupByDayIgnoresEventsBeforeWindow();
     std::cout << "ok group window" << std::endl;
+    testGroupByDayNonAlignedDayStart();
+    std::cout << "ok group aligned" << std::endl;
     testApiRejectsInvertedSchedule();
     std::cout << "ok inverted" << std::endl;
+    testParseTimetableBasic();
+    std::cout << "ok timetable basic" << std::endl;
+    testParseTimetableEmpty();
+    std::cout << "ok timetable empty" << std::endl;
     if (g_failures != 0) {
         std::cout << g_failures << " check(s) failed" << std::endl;
         return 1;

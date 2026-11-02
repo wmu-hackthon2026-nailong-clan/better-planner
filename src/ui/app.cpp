@@ -22,11 +22,13 @@
 #include "api/http_server.hpp"
 #include "api/registry.hpp"
 #include "api/desktop_connector.hpp"
+#include "api/timetable.hpp"
 #include "api/types.hpp"
 #include "core/event.hpp"
 #include "core/layout.hpp"
 #include "core/queries.hpp"
 #include "core/store.hpp"
+#include "ui/liquid_glass.hpp"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -89,6 +91,8 @@ std::int64_t g_monthBase = 0;
 int g_scrollY = 448;
 float g_hoverX=-1, g_hoverY=-1;
 std::unique_ptr<bp::api::DesktopConnector> g_connector;
+bp::ui::LiquidGlass g_glass;
+bool g_glassEnabled = true;
 
 struct SolidBrushes {
     ID2D1SolidColorBrush* text = nullptr;
@@ -221,7 +225,7 @@ struct DayHit {
     D2D1_RECT_F rect;
     std::int64_t dayBase;
 };
-enum class Btn { ViewDay, ViewWeek, ViewMonth, Today, NavPrev, NavNext, Sync, Export };
+enum class Btn { ViewDay, ViewWeek, ViewMonth, Today, Glass, NavPrev, NavNext, Sync, Export, ImportTimetable };
 struct UiButton {
     D2D1_RECT_F rect;
     Btn id;
@@ -264,6 +268,10 @@ void DrawTextLine(ID2D1RenderTarget* t, const std::wstring& text,
 }
 
 void FillPanel(ID2D1RenderTarget* t,D2D1_RECT_F r,D2D1_COLOR_F color,float radius=12) {
+    if(radius>=8 || radius==0) {
+        g_glass.draw(t,r,color,radius);
+        return;
+    }
     ID2D1SolidColorBrush* brush=nullptr;
     if(SUCCEEDED(t->CreateSolidColorBrush(color,&brush))) {
         t->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);
@@ -271,41 +279,8 @@ void FillPanel(ID2D1RenderTarget* t,D2D1_RECT_F r,D2D1_COLOR_F color,float radiu
     }
 }
 void DrawEventBlock(ID2D1RenderTarget* t,const D2D1_RECT_F& r,const D2D1_COLOR_F& a) {
-    const float radius = 9.0f;
-    for (int i = 3; i >= 1; --i) {
-        ID2D1SolidColorBrush* sh = nullptr;
-        if (SUCCEEDED(t->CreateSolidColorBrush(Clr(0.16f,0.20f,0.30f,0.05f*i), &sh))) {
-            const float off = static_cast<float>(i) * 1.2f;
-            t->FillRoundedRectangle(D2D1::RoundedRect(
-                D2D1::RectF(r.left, r.top + off, r.right, r.bottom + off),
-                radius, radius), sh);
-            sh->Release();
-        }
-    }
-    ID2D1LinearGradientBrush* body = VGrad(t, r.top, r.bottom,
-        Clr(0.995f - (0.995f-a.r)*0.30f, 0.995f-(0.995f-a.g)*0.30f, 0.995f-(0.995f-a.b)*0.30f, 1.0f),
-        Clr(0.965f - (0.965f-a.r)*0.18f, 0.965f-(0.965f-a.g)*0.18f, 0.965f-(0.965f-a.b)*0.18f, 1.0f));
-    if (body) {
-        t->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), body);
-        body->Release();
-    }
-    ID2D1LinearGradientBrush* sheen = VGrad(t, r.top, r.top + (r.bottom-r.top)*0.5f,
-        Clr(1,1,1,0.28f), Clr(1,1,1,0.0f));
-    if (sheen) {
-        t->FillRoundedRectangle(D2D1::RoundedRect(r, radius, radius), sheen);
-        sheen->Release();
-    }
-    ID2D1SolidColorBrush* edge = nullptr;
-    if (SUCCEEDED(t->CreateSolidColorBrush(Clr(a.r,a.g,a.b,0.35f), &edge))) {
-        t->DrawRoundedRectangle(D2D1::RoundedRect(r, radius, radius), edge, 1.0f);
-        edge->Release();
-    }
-    ID2D1SolidColorBrush* bar = nullptr;
-    if (SUCCEEDED(t->CreateSolidColorBrush(Clr(a.r,a.g,a.b,0.95f), &bar))) {
-        t->FillRoundedRectangle(D2D1::RoundedRect(
-            D2D1::RectF(r.left+3.0f, r.top+9.0f, r.left+6.5f, r.bottom-9.0f), 2.0f, 2.0f), bar);
-        bar->Release();
-    }
+    g_glass.draw(t,r,Clr(.70f+.30f*a.r,.70f+.30f*a.g,.70f+.30f*a.b),12);
+    FillPanel(t,D2D1::RectF(r.left+3,r.top+9,r.left+6,r.bottom-9),a,2);
 }
 
 void RenderDayScene(ID2D1RenderTarget* t, const SolidBrushes& sb, float x,
@@ -452,6 +427,7 @@ void DrawChip(ID2D1RenderTarget* t, const SolidBrushes& sb,
 
 constexpr float kSidebar=200;
 void RenderTopBar(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F& size) {
+    FillPanel(t,D2D1::RectF(kSidebar+16,14,size.width-16,kTopBarH-6),Clr(1,1,1),18);
     FillPanel(t,D2D1::RectF(0,0,kSidebar,size.height),Clr(0.96f,0.97f,0.99f),0);
     FillPanel(t,D2D1::RectF(22,24,54,56),Clr(0.36f,0.39f,0.84f),10);
     ID2D1SolidColorBrush* white=nullptr;
@@ -474,16 +450,20 @@ void RenderTopBar(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F&
         FillPanel(t,D2D1::RectF(24,365+i*34.0f,32,373+i*34.0f),i==2?Clr(0.94f,0.40f,0.36f):kPalette[i],4);
         DrawTextLine(t,cats[i],D2D1::RectF(44,358+i*34.0f,184,382+i*34.0f),g_fmtBtn,sb.dim);
     }
+    const auto glassButton=D2D1::RectF(16,size.height-112,184,size.height-76);
+    DrawChip(t,sb,glassButton,g_glassEnabled?L"液态玻璃 · 开":L"液态玻璃 · 关",g_glassEnabled);
+    g_ui.push_back({glassButton,Btn::Glass});
     DrawTextLine(t,L"专注当下，从容计划",D2D1::RectF(22,size.height-60,190,size.height-32),g_fmtTime,sb.faint);
     std::wstring heading=g_view==ViewMode::Month?formatMonth(g_monthBase):(g_view==ViewMode::Week?formatDate(g_weekBase)+L" 起的一周":formatDate(g_dayBase));
     DrawTextLine(t,heading,D2D1::RectF(230,25,size.width-250,60),g_fmtBig,sb.text);
     DrawTextLine(t,L"安排好时间，也为生活留一点空白。",D2D1::RectF(232,68,size.width-220,90),g_fmtTime,sb.faint);
-    float x=size.width-218;
+    float x=size.width-330;
     const auto add=[&](D2D1_RECT_F r,const wchar_t* label,Btn id) {
         DrawChip(t,sb,r,label,false);g_ui.push_back({r,id});
     };
-    add(D2D1::RectF(x,26,x+86,62),L"连接与同步",Btn::Sync);
-    add(D2D1::RectF(x+96,26,x+194,62),L"导出长图",Btn::Export);
+    add(D2D1::RectF(x,26,x+92,62),L"连接与同步",Btn::Sync);
+    add(D2D1::RectF(x+102,26,x+188,62),L"导入课表",Btn::ImportTimetable);
+    add(D2D1::RectF(x+198,26,x+286,62),L"导出长图",Btn::Export);
     add(D2D1::RectF(size.width-178,72,size.width-118,100),L"今天",Btn::Today);
     add(D2D1::RectF(size.width-106,72,size.width-72,100),L"‹",Btn::NavPrev);
     add(D2D1::RectF(size.width-64,72,size.width-30,100),L"›",Btn::NavNext);
@@ -516,10 +496,11 @@ void RenderAgenda(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F&
 
 void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
                     const D2D1_SIZE_F& size) {
-    const float headH = 46.0f;
+    const float headH = 52.0f;
     const float y0 = kTopBarH + headH;
     const float colW = (size.width - 28.0f) / 7.0f;
     const float bodyH = size.height - kStatusBarH - y0;
+    const float pxPerHour = bodyH / 24.0f;  // 24 小时铺满整列高度
     const std::int64_t today = TodayBase();
     const wchar_t* kWeek[] = {L"周一", L"周二", L"周三", L"周四",
                               L"周五", L"周六", L"周日"};
@@ -529,69 +510,130 @@ void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
         registry.store()->range(g_weekBase, g_weekBase + 7 * kDaySeconds);
     const auto grouped = bp::groupByDay(all, g_weekBase, kDaySeconds);
 
+    // 顶部：日期 + 星期，今天高亮圆点。
+    for (int d = 0; d < 7; ++d) {
+        const float cx = 14.0f + d * colW;
+        const std::int64_t dayBase = g_weekBase + d * kDaySeconds;
+        const bool isToday = dayBase == today;
+        const std::tm lt = localTm(dayBase);
+        if (isToday) {
+            ID2D1SolidColorBrush* pill = nullptr;
+            t->CreateSolidColorBrush(Clr(0.36f, 0.55f, 0.95f), &pill);
+            t->FillRoundedRectangle(
+                D2D1::RoundedRect(
+                    D2D1::RectF(cx + colW * 0.5f - 30.0f, kTopBarH + 8.0f,
+                                cx + colW * 0.5f + 30.0f, kTopBarH + 34.0f),
+                    13.0f, 13.0f),
+                pill);
+            pill->Release();
+        }
+        wchar_t dayNum[8];
+        swprintf(dayNum, 8, L"%d", lt.tm_mday);
+        std::wstring head = std::wstring(kWeek[d]) + L" " + dayNum;
+        DrawTextLine(t, head,
+                     D2D1::RectF(cx, kTopBarH + 10.0f, cx + colW,
+                                 kTopBarH + 34.0f),
+                     g_fmtWeekHead,
+                     isToday ? (ID2D1Brush*)sb.text : (ID2D1Brush*)sb.dim);
+
+        // 列背景分隔线
+        t->DrawLine(D2D1::Point2F(cx, y0), D2D1::Point2F(cx, y0 + bodyH),
+                    sb.line, 1.0f);
+        // 整点淡横线（每 4 小时一条，避免过密）
+        for (int h = 0; h <= 24; h += 4) {
+            const float yy = y0 + static_cast<float>(h) * pxPerHour;
+            t->DrawLine(D2D1::Point2F(cx, yy), D2D1::Point2F(cx + colW, yy),
+                        sb.line, 0.5f);
+        }
+    }
+
+    // 每列按时间轴排布事件（重叠则用泳道右移，复用 LayoutEngine）。
     for (int d = 0; d < 7; ++d) {
         const float cx = 14.0f + d * colW;
         const std::int64_t dayBase = g_weekBase + d * kDaySeconds;
         const bool isToday = dayBase == today;
         if (isToday) {
             ID2D1SolidColorBrush* hl = nullptr;
-            t->CreateSolidColorBrush(Clr(0.36f, 0.55f, 0.95f, 0.07f), &hl);
+            t->CreateSolidColorBrush(Clr(0.36f, 0.55f, 0.95f, 0.05f), &hl);
             t->FillRoundedRectangle(
                 D2D1::RoundedRect(
-                    D2D1::RectF(cx + 2.0f, kTopBarH + 4.0f, cx + colW - 2.0f,
-                                y0 + bodyH - 4.0f),
-                    10.0f, 10.0f),
+                    D2D1::RectF(cx + 2.0f, y0 + 2.0f, cx + colW - 2.0f,
+                                y0 + bodyH - 2.0f),
+                    8.0f, 8.0f),
                 hl);
             hl->Release();
         }
-        const std::tm lt = localTm(dayBase);
-        wchar_t dayNum[8];
-        swprintf(dayNum, 8, L"%d", lt.tm_mday);
-        std::wstring head = std::wstring(kWeek[d]) + L" " + dayNum;
-        DrawTextLine(t, head,
-                     D2D1::RectF(cx, kTopBarH + 12.0f, cx + colW,
-                                 kTopBarH + headH),
-                     g_fmtWeekHead, isToday ? sb.text : sb.dim);
-        t->DrawLine(D2D1::Point2F(cx, y0), D2D1::Point2F(cx, y0 + bodyH),
-                    sb.line, 1.0f);
-
         g_dayHits.push_back(DayHit{
             D2D1::RectF(cx, kTopBarH, cx + colW, y0 + bodyH), dayBase});
+
         auto it = grouped.find(dayBase);
         if (it == grouped.end()) continue;
         const auto blocks = registry.layoutEngine()->layout(it->second);
-        float ey = y0 + 8.0f;
+
         for (const auto& block : blocks) {
             if (block.eventIndices.empty()) continue;
             const auto& e = it->second[block.eventIndices.front()];
+            const std::int64_t startSec =
+                (std::max)(e.start - dayBase, (std::int64_t)0);
+            std::int64_t endSec = e.end - dayBase;
+            if (e.kind == bp::Kind::Deadline) endSec = startSec;
+            const float durHours =
+                (std::max)(static_cast<float>(endSec - startSec) / 3600.0f,
+                           0.5f);
+            const float laneShift =
+                (std::min)(static_cast<float>(block.lane) * (colW * 0.22f),
+                           colW * 0.45f);
+
+            const float blockTop = y0 + 4.0f +
+                                   static_cast<float>(startSec) / 3600.0f *
+                                       pxPerHour;
+            const float blockH = durHours * pxPerHour;
+            if (blockTop + blockH > y0 + bodyH) continue;
+
+            const D2D1_RECT_F r =
+                D2D1::RectF(cx + 4.0f + laneShift, blockTop,
+                            cx + colW - 4.0f, blockTop + blockH);
             const D2D1_COLOR_F accent = AccentOf(e);
-            const float bh = 34.0f;
-            const D2D1_RECT_F r = D2D1::RectF(cx + 5.0f, ey, cx + colW - 5.0f,
-                                              ey + bh);
-            ID2D1LinearGradientBrush* bg =
-                VGrad(t, r.top, r.bottom, Clr(accent.r, accent.g, accent.b, 0.28f),
-                      Clr(accent.r, accent.g, accent.b, 0.12f));
-            if (bg) {
-                t->FillRoundedRectangle(D2D1::RoundedRect(r, 7.0f, 7.0f), bg);
-                bg->Release();
+            DrawEventBlock(t, r, accent);
+            if (block.lane > 0) {
+                ID2D1SolidColorBrush* ring = nullptr;
+                if (SUCCEEDED(t->CreateSolidColorBrush(Clr(1, 1, 1, 0.9f),
+                                                       &ring))) {
+                    t->DrawRoundedRectangle(D2D1::RoundedRect(r, 8.0f, 8.0f),
+                                            ring, 1.0f);
+                    ring->Release();
+                }
             }
-            ID2D1SolidColorBrush* dot = nullptr;
-            t->CreateSolidColorBrush(accent, &dot);
-            t->FillEllipse(
-                D2D1::Ellipse(D2D1::Point2F(r.left + 9.0f, r.top + 10.5f), 3.0f,
-                              3.0f),
-                dot);
-            dot->Release();
-            DrawTextLine(t, toWide(e.title),
-                         D2D1::RectF(r.left + 17.0f, r.top + 2.0f, r.right - 4.0f,
-                                     r.top + 19.0f),
+            g_hits.push_back(HitBlock{r, it->second});
+
+            t->PushAxisAlignedClip(r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            const std::wstring title =
+                block.summary ? shortTitle(e) : toWide(e.title);
+            const bool tall = blockH >= 44.0f;
+            float ty = r.top + 4.0f;
+            DrawTextLine(t, title,
+                         D2D1::RectF(r.left + 10.0f, ty, r.right - 6.0f,
+                                     ty + 17.0f),
                          g_fmtTime, sb.text);
-            DrawTextLine(t, spanText(e),
-                         D2D1::RectF(r.left + 17.0f, r.top + 17.0f,
-                                     r.right - 4.0f, r.top + 32.0f),
-                         g_fmtStatus, sb.faint);
-            ey += bh + 5.0f;
-            if (ey + bh > y0 + bodyH) break;
+            ty += 17.0f;
+            if (tall && !block.summary) {
+                DrawTextLine(t, spanText(e),
+                             D2D1::RectF(r.left + 10.0f, ty, r.right - 6.0f,
+                                         ty + 14.0f),
+                             g_fmtStatus, sb.dim);
+                ty += 14.0f;
+                // 地点优先（标题已是课程名，避免重复）；无地点才显示教师。
+                const std::wstring meta = !e.location.empty()
+                                              ? toWide(e.location)
+                                              : toWide(e.teacher);
+                if (!meta.empty() && r.bottom - ty > 13.0f) {
+                    DrawTextLine(t, meta,
+                                 D2D1::RectF(r.left + 10.0f, ty, r.right - 6.0f,
+                                             ty + 13.0f),
+                                 g_fmtStatus, sb.faint);
+                }
+            }
+            t->PopAxisAlignedClip();
         }
     }
 }
@@ -695,7 +737,10 @@ void RenderView() {
     g_ui.clear();
     g_target->BeginDraw();
 
-    g_target->Clear(Clr(1,1,1));
+    HIGHCONTRASTW contrast{sizeof(HIGHCONTRASTW)};
+    SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0);
+    g_glass.begin(g_target,g_hoverX,g_hoverY,g_glassEnabled && !(contrast.dwFlags&HCF_HIGHCONTRASTON));
+    g_glass.background(g_target);
     SolidBrushes sb;
     sb.Create(g_target);
     const D2D1_SIZE_F size=g_target->GetSize();
@@ -721,6 +766,7 @@ void RenderView() {
     const HRESULT hr = g_target->EndDraw();
     sb.Release();
     if (hr == D2DERR_RECREATE_TARGET) {
+        g_glass.reset();
         g_target->Release();
         g_target = nullptr;
     }
@@ -753,16 +799,8 @@ bool ExportDayViewPng(const std::wstring& path) {
     }
 
     rt->BeginDraw();
-    ID2D1LinearGradientBrush* bgGrad =
-        VGrad(rt, 0.0f, static_cast<float>(height), Clr(1,1,1),
-              Clr(0.98f,0.99f,1));
-    if (bgGrad) {
-        rt->FillRectangle(
-            D2D1::RectF(0, 0, static_cast<float>(width),
-                        static_cast<float>(height)),
-            bgGrad);
-        bgGrad->Release();
-    }
+    g_glass.begin(rt,-1,-1,g_glassEnabled);
+    g_glass.background(rt);
     SolidBrushes sb;
     sb.Create(rt);
     {
@@ -774,6 +812,78 @@ bool ExportDayViewPng(const std::wstring& path) {
                    0.0f, nullptr);
     const HRESULT hr = rt->EndDraw();
     sb.Release();
+    g_glass.reset();
+    rt->Release();
+    if (FAILED(hr)) {
+        wicBitmap->Release();
+        return false;
+    }
+
+    IWICStream* stream = nullptr;
+    IWICBitmapEncoder* encoder = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    bool ok = false;
+    if (SUCCEEDED(g_wic->CreateStream(&stream)) &&
+        SUCCEEDED(stream->InitializeFromFilename(path.c_str(),
+                                                 GENERIC_WRITE)) &&
+        SUCCEEDED(g_wic->CreateEncoder(GUID_ContainerFormatPng, nullptr,
+                                       &encoder)) &&
+        SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) &&
+        SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) &&
+        SUCCEEDED(frame->Initialize(nullptr)) &&
+        SUCCEEDED(frame->SetSize(width, height))) {
+        WICPixelFormatGUID fmt = GUID_WICPixelFormat32bppPBGRA;
+        if (SUCCEEDED(frame->SetPixelFormat(&fmt)) &&
+            SUCCEEDED(frame->WriteSource(wicBitmap, nullptr)) &&
+            SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit())) {
+            ok = true;
+        }
+    }
+    if (frame) frame->Release();
+    if (encoder) encoder->Release();
+    if (stream) stream->Release();
+    wicBitmap->Release();
+    return ok;
+}
+
+// 导出周视图 PNG（调试/验证用，与日视图导出同机制）。
+bool ExportWeekViewPng(const std::wstring& path) {
+    if (!g_wic) {
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                         CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_wic));
+    }
+    if (!g_wic) return false;
+
+    const UINT width = 1600;
+    const UINT height = 900;
+
+    IWICBitmap* wicBitmap = nullptr;
+    if (FAILED(g_wic->CreateBitmap(width, height,
+                                   GUID_WICPixelFormat32bppPBGRA,
+                                   WICBitmapCacheOnDemand, &wicBitmap))) {
+        return false;
+    }
+    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                          D2D1_ALPHA_MODE_PREMULTIPLIED));
+    ID2D1RenderTarget* rt = nullptr;
+    if (FAILED(g_factory->CreateWicBitmapRenderTarget(wicBitmap, props, &rt))) {
+        wicBitmap->Release();
+        return false;
+    }
+
+    rt->BeginDraw();
+    g_glass.begin(rt, -1, -1, g_glassEnabled);
+    g_glass.background(rt);
+    SolidBrushes sb;
+    sb.Create(rt);
+    const D2D1_SIZE_F size = D2D1::SizeF(static_cast<float>(width),
+                                         static_cast<float>(height));
+    RenderWeekView(rt, sb, size);
+    const HRESULT hr = rt->EndDraw();
+    sb.Release();
+    g_glass.reset();
     rt->Release();
     if (FAILED(hr)) {
         wicBitmap->Release();
@@ -870,56 +980,89 @@ void CreateTarget(HWND hwnd) {
 }
 
 void SeedDemoData(const std::shared_ptr<bp::EventStore>& store) {
-    const std::int64_t today = TodayBase();
-    struct Seed {
-        int dayOffset;
-        int startHour;
-        int startMin;
-        int endHour;
-        int endMin;
-        const char* title;
-        const char* note;
-        const char* course;
-        const char* location;
-        bool deadline;
-    };
-    const Seed seeds[] = {
-        {0, 8, 0, 9, 0, "晨读英语", "背诵 Unit 5 单词", "大学英语", "图书馆 3F", false},
-        {0, 8, 0, 9, 0, "晨读英语", "背诵 Unit 5 单词", "大学英语", "图书馆 3F", false},
-        {0, 9, 30, 11, 0, "高等数学·第7讲", "带习题册", "高等数学", "一教 301", false},
-        {0, 10, 0, 11, 0, "线性代数辅导", "答疑 30 分钟", "线性代数", "二教 102", false},
-        {0, 13, 0, 15, 0, "操作系统实验", "Lab4 内存管理", "操作系统", "实验楼 B403", false},
-        {0, 14, 0, 15, 0, "助教答疑", "实验难点讲解", "", "实验楼 B405", false},
-        {0, 15, 30, 17, 0, "数据结构·第9讲", "", "数据结构", "一教 205", false},
-        {0, 20, 0, 20, 0, "物理作业截止", "第5章 习题 1-8", "大学物理", "", true},
-        {1, 9, 0, 10, 30, "线性代数", "", "线性代数", "二教 102", false},
-        {1, 10, 30, 12, 0, "体育·羽毛球", "", "", "体育馆", false},
-        {1, 15, 0, 17, 0, "黑客松开发冲刺", "完成 M6 联调", "", "图书馆 4F", false},
-        {2, 8, 30, 10, 0, "数据库原理", "", "数据库", "一教 305", false},
-        {2, 13, 0, 14, 30, "机器学习导论", "第6章 SVM", "机器学习", "三教 401", false},
-        {2, 0, 0, 23, 59, "英语作文截止", "Topic: My Campus", "大学英语", "", true},
-        {3, 10, 0, 11, 30, "编译原理", "", "编译原理", "二教 208", false},
-        {3, 19, 0, 21, 0, "社团招新摆摊", "", "", "学生活动中心", false},
-        {4, 9, 0, 12, 0, "操作系统·第10讲", "", "操作系统", "一教 301", false},
-        {4, 14, 0, 16, 0, "项目答辩彩排", "准备演示脚本", "", "实验楼 A201", false},
-    };
-    for (const auto& s : seeds) {
-        bp::Event e;
-        e.kind = s.deadline ? bp::Kind::Deadline : bp::Kind::Schedule;
-        const std::int64_t base = today + s.dayOffset * kDaySeconds;
-        if (s.deadline) {
-            e.start = base + s.endHour * 3600 + s.endMin * 60;
-            e.end = e.start;
-        } else {
-            e.start = base + s.startHour * 3600 + s.startMin * 60;
-            e.end = base + s.endHour * 3600 + s.endMin * 60;
-        }
-        e.title = s.title;
-        e.note = s.note;
-        e.course = s.course;
-        e.location = s.location;
+    // 演示课程数据已按需求清空；保留函数以维持 --demo / --export 入口。
+    (void)store;
+}
+
+// 读取文件为 UTF-8 字符串（用于导入课表 JSON/HTML）。
+std::string readFileUtf8(const std::wstring& path) {
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, path.c_str(), L"rb") != 0 || file == nullptr) {
+        return std::string();
+    }
+    std::string out;
+    char buffer[4096];
+    std::size_t n = 0;
+    while ((n = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        out.append(buffer, n);
+    }
+    std::fclose(file);
+    // 去掉 UTF-8 BOM（若存在）。
+    if (out.size() >= 3 && static_cast<unsigned char>(out[0]) == 0xEF &&
+        static_cast<unsigned char>(out[1]) == 0xBB &&
+        static_cast<unsigned char>(out[2]) == 0xBF) {
+        out.erase(0, 3);
+    }
+    return out;
+}
+
+// 导入教务系统课表：弹文件选择框，解析后写入 store 并刷新。
+void importTimetable(HWND hwnd) {
+    wchar_t path[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFilter =
+        L"课表文件 (*.json;*.html;*.htm)\0*.json;*.html;*.htm\0所有文件 "
+        L"(*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&ofn)) {
+        return;
+    }
+    const std::string text = readFileUtf8(path);
+    if (text.empty()) {
+        MessageBoxW(hwnd, L"无法读取该文件", L"导入失败", MB_ICONERROR);
+        return;
+    }
+    const bp::api::TimetableResult result =
+        bp::api::parseTimetable(text, 0);
+    if (result.empty || result.events.empty()) {
+        std::wstring msg = L"未从文件中解析到课表数据。\n\n";
+        msg += L"提示：教务系统「课表查询」页面若为动态加载（数据由 JS "
+               L"拉取），保存的网页文件不含课程数据，需登录后导出含 kbList "
+               L"的 JSON 或含 <table> 的完整课表。";
+        MessageBoxW(hwnd, msg.c_str(), L"未找到课表", MB_ICONWARNING);
+        return;
+    }
+    auto store = bp::api::Registry::instance().store();
+    std::int64_t earliest = 0;
+    for (const auto& e : result.events) {
+        if (earliest == 0 || e.start < earliest) earliest = e.start;
         store->add(e);
     }
+    // 跳转到最早那门课所在的周，方便用户看到导入结果。
+    if (earliest != 0) {
+        std::tm lt{};
+        const std::time_t tt = static_cast<std::time_t>(earliest);
+        localtime_s(&lt, &tt);
+        lt.tm_hour = 0;
+        lt.tm_min = 0;
+        lt.tm_sec = 0;
+        g_dayBase = static_cast<std::int64_t>(_mktime64(&lt));
+        g_weekBase = g_dayBase - ((lt.tm_wday + 6) % 7) * kDaySeconds;
+    }
+    std::wstring msg =
+        L"成功导入 " + std::to_wstring(result.events.size()) + L" 个课程安排。";
+    if (!result.warnings.empty()) {
+        msg += L"\n\n部分条目被跳过：\n";
+        for (std::size_t i = 0; i < result.warnings.size() && i < 8; ++i) {
+            msg += L"· " + toWide(result.warnings[i]) + L"\n";
+        }
+    }
+    MessageBoxW(hwnd, msg.c_str(), L"导入成功", MB_OK);
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -998,6 +1141,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         g_view = ViewMode::Month;
                         break;
                     }
+                    case Btn::Glass: g_glassEnabled = !g_glassEnabled; break;
                     case Btn::Today: {
                         g_dayBase = TodayBase();
                         auto date = localTm(g_dayBase);
@@ -1027,6 +1171,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         break;
                     case Btn::Sync: {
                         if (g_connector) g_connector->requestOpen();
+                        return 0;
+                    }
+                    case Btn::ImportTimetable: {
+                        importTimetable(hwnd);
                         return 0;
                     }
                     case Btn::Export: {
@@ -1112,6 +1260,55 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     registry.provideStore(store);
     const LPWSTR cmd = GetCommandLineW();
     if (cmd && (wcsstr(cmd, L"--demo") || wcsstr(cmd, L"--export"))) SeedDemoData(store);
+    if (cmd && wcsstr(cmd, L"--export-week")) {
+        // 周视图导出：注入临时演示课程以便验证渲染。
+        const std::int64_t week0 = TodayBase();
+        std::tm lt = localTm(week0);
+        const std::int64_t monday = week0 - ((lt.tm_wday + 6) % 7) * kDaySeconds;
+        struct S { int day; int h0; int m0; int h1; int m1; const char* t; };
+        const S seeds[] = {
+            {0, 8, 0, 9, 0, "高等数学"},
+            {0, 9, 30, 11, 0, "线性代数"},
+            {0, 13, 0, 15, 0, "操作系统实验"},
+            {1, 8, 0, 9, 30, "大学英语"},
+            {1, 10, 0, 11, 30, "体育"},
+            {2, 9, 0, 10, 0, "数据结构"},
+            {2, 14, 0, 15, 30, "编译原理"},
+            {3, 8, 30, 10, 0, "数据库原理"},
+            {3, 13, 0, 14, 30, "机器学习"},
+            {4, 9, 0, 12, 0, "操作系统"},
+            {5, 10, 0, 11, 30, "社团活动"},
+            {6, 15, 0, 17, 0, "项目答辩"},
+        };
+        for (const auto& s : seeds) {
+            bp::Event e;
+            e.kind = bp::Kind::Schedule;
+            const std::int64_t base = monday + s.day * kDaySeconds;
+            e.start = base + s.h0 * 3600 + s.m0 * 60;
+            e.end = base + s.h1 * 3600 + s.m1 * 60;
+            e.title = s.t;
+            e.course = s.t;
+            store->add(e);
+        }
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(cmd, &argc);
+        std::wstring out = L"week-export.png";
+        for (int i = 0; i + 1 < argc; ++i) {
+            if (wcscmp(argv[i], L"--export-week") == 0) out = argv[i + 1];
+        }
+        g_weekBase = monday;
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_factory);
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                            __uuidof(IDWriteFactory),
+                            reinterpret_cast<IUnknown**>(&g_dwrite));
+        CreateTextFormats();
+        const bool ok = ExportWeekViewPng(out);
+        ReleaseTextFormats();
+        if (g_factory) g_factory->Release();
+        if (g_wic) g_wic->Release();
+        CoUninitialize();
+        return ok ? 0 : 2;
+    }
     if (cmd && wcsstr(cmd, L"--export")) {
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(cmd, &argc);
@@ -1182,6 +1379,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
 
     httpServer.stop();
+    g_glass.reset();
     if (g_target) g_target->Release();
     ReleaseTextFormats();
     if (g_factory) g_factory->Release();

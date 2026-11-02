@@ -1,8 +1,29 @@
 #include "core/store.hpp"
 
 #include <mutex>
+#include <stdexcept>
 
 namespace bp {
+
+void EventStore::mergeImported(std::vector<Event> events) {
+    for (const auto& event : events) {
+        if (event.source.empty() || event.externalId.empty()) {
+            throw std::invalid_argument("source and externalId required");
+        }
+    }
+    std::unique_lock lock(mutex_);
+    for (auto& event : events) {
+        bool found = false;
+        for (auto& record : records_) {
+            if (record.event.source == event.source && record.event.externalId == event.externalId) {
+                record.event = std::move(event);
+                found = true;
+                break;
+            }
+        }
+        if (!found) records_.push_back(Record{nextId_++, std::move(event)});
+    }
+}
 
 std::uint64_t EventStore::add(Event event) {
     std::unique_lock lock(mutex_);

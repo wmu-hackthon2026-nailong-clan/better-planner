@@ -285,9 +285,10 @@ SyncResult syncChaoxing(const SyncConfig& config) {
     SyncResult result;
     result.platform = "学习通";
     int exitCode = 0;
-    const std::string output =
-        runProcess(config.python, "\"" + config.xxtScript + "\"", rootDir(),
-                   config.timeoutSeconds, exitCode);
+    const std::string output = runProcess(
+        config.python,
+        "\"" + config.xxtScript + "\" week --json", rootDir(),
+        config.timeoutSeconds, exitCode);
     if (exitCode != 0) {
         result.error = exitCode == 2 ? "尚未登录或登录已失效"
                                      : "查询失败（退出码 " +
@@ -352,6 +353,9 @@ SyncResult syncChaoxing(const SyncConfig& config) {
                              ? Kind::Schedule
                              : Kind::Deadline;
             event.course = row.getString("course");
+            if (event.course.empty() && !name.empty()) {
+                event.course = name;  // 学习通 week 输出的 name 即课程名
+            }
             event.location = row.getString("location");
             event.teacher = row.getString("teacher");
             event.url = row.getString("url");

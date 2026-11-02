@@ -38,6 +38,7 @@ struct Event {
     std::string teacher;     // 教师
     std::string url;         // 平台详情链接
     bool done = false;       // 平台侧是否已完成
+    std::string externalId;  // 平台稳定标识；与 source 联合作为同步更新键。
 };
 
 // 判定两个时间区间是否重叠（半开区间 [start, end) 口径）。

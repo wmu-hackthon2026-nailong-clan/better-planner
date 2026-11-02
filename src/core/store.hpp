@@ -20,6 +20,10 @@ public:
     // 新增事件，返回分配的稳定 id。
     std::uint64_t add(Event event);
 
+    // 原子合并平台记录；相同来源/外部 ID 更新原记录，保留本地和其他平台数据。
+    // 每条记录必须具有非空 source 与 externalId，非法批次不会部分写入。
+    void mergeImported(std::vector<Event> events);
+
     // 按 id 删除；id 不存在返回 false。
     bool remove(std::uint64_t id);
 
