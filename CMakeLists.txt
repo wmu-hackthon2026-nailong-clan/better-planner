@@ -21,11 +21,13 @@ add_library(bp_api STATIC
     src/api/json_io.cpp
     src/api/http_server.cpp
     src/api/sync.cpp
+    src/api/desktop_connector.cpp
 )
+target_include_directories(bp_api PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 target_link_libraries(bp_api PUBLIC bp_core PRIVATE ws2_32)
 
 add_executable(better_planner WIN32 src/ui/app.cpp)
-target_link_libraries(better_planner PRIVATE bp_core bp_api d2d1 user32 gdi32)
+target_link_libraries(better_planner PRIVATE bp_core bp_api d2d1 user32 gdi32 shell32)
 target_compile_definitions(better_planner PRIVATE UNICODE _UNICODE NOMINMAX)
 
 enable_testing()

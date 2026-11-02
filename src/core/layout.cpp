@@ -87,7 +87,7 @@ std::vector<LayoutEngine::Block> LayoutEngine::layout(
         Block block;
         block.eventIndices = clusters[idx].indices;
         block.lane = lane[idx];
-        block.summary = !adjacency[idx].empty();
+        block.summary = lane[idx] > 0;
         blocks.push_back(std::move(block));
     }
     return blocks;

@@ -65,11 +65,17 @@ void testContainedEventShiftsRight() {
     const std::vector<LayoutEngine::Block> blocks = LayoutEngine().layout(events);
     check(blocks.size() == 2, "contained: two blocks");
     check(blocks[0].lane != blocks[1].lane, "contained: different lanes");
-    bool allSummary = true;
+    int mainSummary = 0;
+    int shiftedSummary = 0;
     for (const auto& block : blocks) {
-        allSummary = allSummary && block.summary;
+        if (block.lane == 0) {
+            mainSummary += block.summary ? 1 : 0;
+        } else {
+            shiftedSummary += block.summary ? 1 : 0;
+        }
     }
-    check(allSummary, "contained: summary only");
+    check(mainSummary == 0, "contained: main lane full info");
+    check(shiftedSummary == 1, "contained: shifted lane summary only");
 }
 
 void testPartialOverlapShiftsRight() {
@@ -269,6 +275,34 @@ void testApiRejectsInvertedSchedule() {
 }  // namespace
 
 int main() {
+    {
+        EventStore store;
+        auto local = makeEvent(10, 20, "local");
+        const auto localId = store.add(local);
+        auto imported = makeEvent(30, 40, "original");
+        imported.source = "platform-a";
+        imported.externalId = "stable-id";
+        store.mergeImported({imported});
+        imported.title = "updated";
+        imported.end = 60;
+        imported.done = true;
+        store.mergeImported({imported, imported});
+        check(store.size() == 2, "sync: repeated snapshots do not duplicate");
+        check(store.get(localId)->title == "local", "sync: local events preserved");
+        auto rows = store.range(30, 61);
+        check(rows.size() == 1 && rows[0].title == "updated" && rows[0].done,
+              "sync: deadline and completion update");
+        imported.source = "platform-b";
+        store.mergeImported({imported});
+        check(store.size() == 3, "sync: platform identities do not collide");
+        auto invalid = imported;
+        invalid.externalId.clear();
+        imported.externalId = "new-id";
+        bool rejected = false;
+        try { store.mergeImported({imported, invalid}); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        check(rejected && store.size() == 3, "sync: invalid batch is atomic");
+    }
     std::cout << std::unitbuf;
     std::cout << "start tests" << std::endl;
     testIdenticalSpansMergeIntoOneBlock();
