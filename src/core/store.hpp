@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <shared_mutex>
 #include <vector>
 
 #include "core/event.hpp"
@@ -26,7 +27,11 @@ public:
     std::optional<Event> get(std::uint64_t id) const;
 
     // 取回与 [from, to) 时间区间有交集的全部事件（半开区间口径）。
+    // 零时长 deadline 在 from <= when < to 时返回。
     std::vector<Event> range(std::int64_t from, std::int64_t to) const;
+
+    // 取回全部事件副本，供 HTTP 查询与导出使用。
+    std::vector<Event> all() const;
 
     // 当前事件总数（演示与测试用）。
     std::size_t size() const;
@@ -38,6 +43,7 @@ private:
     };
     std::vector<Record> records_;
     std::uint64_t nextId_ = 1;
+    mutable std::shared_mutex mutex_;
 };
 
 }  // namespace bp

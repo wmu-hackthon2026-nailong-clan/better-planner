@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "api/http_server.hpp"
 #include "api/registry.hpp"
 #include "api/types.hpp"
 #include "core/event.hpp"
@@ -31,6 +32,7 @@ constexpr float kLaneShift = 30.0f;
 constexpr float kTitleLines = 22.0f;
 constexpr float kTimeLines = 16.0f;
 constexpr float kTopBar = 64.0f;
+constexpr UINT kEventsChangedMessage = WM_APP + 1;
 
 ID2D1Factory* g_factory = nullptr;
 ID2D1HwndRenderTarget* g_target = nullptr;
@@ -550,6 +552,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        case kEventsChangedMessage:
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -586,12 +591,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);
 
+    bp::api::HttpServer httpServer;
+    if (httpServer.start(store, [hwnd] {
+            PostMessageW(hwnd, kEventsChangedMessage, 0, 0);
+        })) {
+        const std::wstring httpTitle =
+            title + L" | http://127.0.0.1:" +
+            std::to_wstring(httpServer.port());
+        SetWindowTextW(hwnd, httpTitle.c_str());
+    } else {
+        const std::wstring error = toWide(httpServer.lastError());
+        SetWindowTextW(hwnd, (title + L" | HTTP failed: " + error).c_str());
+    }
+
     MSG msg = {};
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
+    httpServer.stop();
     if (g_target) g_target->Release();
     ReleaseTextFormats();
     if (g_factory) g_factory->Release();

@@ -1,14 +1,18 @@
 #include "core/store.hpp"
 
+#include <mutex>
+
 namespace bp {
 
 std::uint64_t EventStore::add(Event event) {
+    std::unique_lock lock(mutex_);
     const std::uint64_t id = nextId_++;
     records_.push_back(Record{id, std::move(event)});
     return id;
 }
 
 bool EventStore::remove(std::uint64_t id) {
+    std::unique_lock lock(mutex_);
     for (auto it = records_.begin(); it != records_.end(); ++it) {
         if (it->id == id) {
             records_.erase(it);
@@ -19,6 +23,7 @@ bool EventStore::remove(std::uint64_t id) {
 }
 
 std::optional<Event> EventStore::get(std::uint64_t id) const {
+    std::shared_lock lock(mutex_);
     for (const auto& record : records_) {
         if (record.id == id) {
             return record.event;
@@ -28,17 +33,32 @@ std::optional<Event> EventStore::get(std::uint64_t id) const {
 }
 
 std::vector<Event> EventStore::range(std::int64_t from, std::int64_t to) const {
+    std::shared_lock lock(mutex_);
     std::vector<Event> result;
     for (const auto& record : records_) {
         const Event& event = record.event;
-        if (event.start < to && from < event.end) {
+        const bool pointInRange = event.start == event.end &&
+                                  from <= event.start && event.start < to;
+        const bool spanOverlaps = event.start < to && from < event.end;
+        if (pointInRange || spanOverlaps) {
             result.push_back(event);
         }
     }
     return result;
 }
 
+std::vector<Event> EventStore::all() const {
+    std::shared_lock lock(mutex_);
+    std::vector<Event> result;
+    result.reserve(records_.size());
+    for (const auto& record : records_) {
+        result.push_back(record.event);
+    }
+    return result;
+}
+
 std::size_t EventStore::size() const {
+    std::shared_lock lock(mutex_);
     return records_.size();
 }
 

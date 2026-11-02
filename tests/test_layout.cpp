@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "api/json_io.hpp"
 #include "api/types.hpp"
 #include "core/layout.hpp"
 #include "core/queries.hpp"
@@ -154,6 +155,61 @@ void testApiNormalization() {
     check(threw, "api: missing end throws");
 }
 
+void testStoreIncludesDeadlineInRange() {
+    EventStore store;
+    store.add(makeEvent(3600, 3600, "deadline"));
+    check(store.range(0, 7200).size() == 1, "store: deadline in range");
+    check(store.range(0, 3600).empty(), "store: deadline range half-open");
+    check(store.all().size() == 1, "store: all returns deadline");
+}
+
+void testJsonSubmissionAndRoundTrip() {
+    const std::string json =
+        "[{\"type\":\"schedule\",\"start\":100,\"end\":200,"
+        "\"title\":\"\\u9ad8\\u6570\",\"note\":\"line\\n2\"},"
+        "{\"type\":\"schedule\",\"start\":300,\"durationSeconds\":60,"
+        "\"title\":\"duration\"},"
+        "{\"type\":\"deadline\",\"when\":400,\"title\":\"\\ud83d\\ude00\"}]";
+    const auto events = bp::api::parseEventsJson(json);
+    check(events.size() == 3, "json: three events");
+    check(events[0].title == "\xe9\xab\x98\xe6\x95\xb0", "json: unicode title");
+    check(events[0].note == "line\n2", "json: escaped newline");
+    check(events[1].end == 360, "json: duration normalized");
+    check(events[2].kind == Kind::Deadline, "json: deadline kind");
+    check(events[2].title == "\xf0\x9f\x98\x80", "json: surrogate pair");
+    const auto roundTrip = bp::api::parseEventsJson(bp::api::dumpEventsJson(events));
+    check(roundTrip.size() == 3, "json: round trip size");
+    check(roundTrip[0].start == 100 && roundTrip[0].end == 200,
+          "json: round trip span");
+    check(roundTrip[2].title == events[2].title, "json: round trip unicode");
+}
+
+void testJsonRejectsBadInput() {
+    const std::vector<std::string> inputs = {
+        "{",
+        "[1]",
+        "{\"type\":\"other\"}",
+        "{\"type\":\"schedule\",\"start\":100}",
+        "{\"type\":\"schedule\",\"start\":100,\"end\":\"200\"}",
+        "{\"type\":\"deadline\",\"when\":1,\"title\":2}",
+        "{\"type\":\"schedule\",\"start\":100,\"end\":50}",
+        "{\"type\":\"deadline\",\"when\":01}",
+        "{\"type\":\"deadline\",\"when\":1.5}",
+        "{\"type\":\"deadline\",\"when\":999999999999999999999}",
+        "{\"type\":\"deadline\",\"when\":1,\"when\":2}",
+        "{\"type\":\"deadline\",\"when\":1,\"title\":\"\\ud800\"}",
+    };
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        bool threw = false;
+        try {
+            bp::api::parseEventsJson(inputs[i]);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        check(threw, ("json rejects bad input " + std::to_string(i)).c_str());
+    }
+}
+
 void testGroupByDayMultiDayEvent() {
     std::vector<Event> events = {
         makeEvent(0, 86400 * 3, "trip"),
@@ -229,6 +285,12 @@ int main() {
     std::cout << "ok deadline" << std::endl;
     testStoreRoundTrip();
     std::cout << "ok store" << std::endl;
+    testStoreIncludesDeadlineInRange();
+    std::cout << "ok store deadline" << std::endl;
+    testJsonSubmissionAndRoundTrip();
+    std::cout << "ok json round trip" << std::endl;
+    testJsonRejectsBadInput();
+    std::cout << "ok json rejects" << std::endl;
     testApiNormalization();
     std::cout << "ok api" << std::endl;
     testGroupByDayMultiDayEvent();

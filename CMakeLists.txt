@@ -18,8 +18,10 @@ target_include_directories(bp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_library(bp_api STATIC
     src/api/types.cpp
     src/api/registry.cpp
+    src/api/json_io.cpp
+    src/api/http_server.cpp
 )
-target_link_libraries(bp_api PUBLIC bp_core)
+target_link_libraries(bp_api PUBLIC bp_core PRIVATE ws2_32)
 
 add_executable(better_planner WIN32 src/ui/app.cpp)
 target_link_libraries(better_planner PRIVATE bp_core bp_api d2d1 user32 gdi32)
@@ -29,3 +31,7 @@ enable_testing()
 add_executable(test_layout tests/test_layout.cpp)
 target_link_libraries(test_layout PRIVATE bp_core bp_api)
 add_test(NAME core_and_api COMMAND test_layout)
+
+add_executable(test_api_http tests/test_api_http.cpp)
+target_link_libraries(test_api_http PRIVATE bp_api ws2_32)
+add_test(NAME api_http COMMAND test_api_http)
