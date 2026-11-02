@@ -1,8 +1,10 @@
 #include <windows.h>
 #include <windowsx.h>
+#include <commdlg.h>
 #include <d2d1.h>
 #include <d2d1helper.h>
 #include <dwrite.h>
+#include <wincodec.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -21,18 +23,23 @@
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "comdlg32.lib")
 
 namespace {
 
 constexpr std::int64_t kDayStart = 0;
 constexpr std::int64_t kDaySeconds = 86400;
-constexpr std::int64_t kViewStart = 7 * 3600;
-constexpr std::int64_t kViewEnd = 22 * 3600;
 constexpr float kLaneShift = 30.0f;
 constexpr float kTitleLines = 22.0f;
 constexpr float kTimeLines = 16.0f;
 constexpr float kTopBar = 64.0f;
 constexpr UINT kEventsChangedMessage = WM_APP + 1;
+
+constexpr float kPixelsPerHour = 80.0f;
+constexpr float kAxisWidth = 62.0f;
+constexpr float kRightMargin = 24.0f;
+constexpr float kBottomMargin = 20.0f;
 
 ID2D1Factory* g_factory = nullptr;
 ID2D1HwndRenderTarget* g_target = nullptr;
@@ -40,10 +47,12 @@ IDWriteFactory* g_dwrite = nullptr;
 IDWriteTextFormat* g_titleFormat = nullptr;
 IDWriteTextFormat* g_timeFormat = nullptr;
 IDWriteTextFormat* g_axisFormat = nullptr;
+IWICImagingFactory* g_wic = nullptr;
 
 enum class ViewMode { Day, Week, Month };
 ViewMode g_view = ViewMode::Day;
 int g_selectedDay = 0;
+int g_scrollY = 0;
 
 struct HitBlock {
     D2D1_RECT_F rect;
@@ -246,32 +255,58 @@ void RenderTopBar(const Brushes& b, const D2D1_RECT_F& buttonRect) {
     DrawTextLine(viewName(),
                  D2D1::RectF(buttonRect.right + 12.0f, 12.0f, 400.0f, 40.0f),
                  g_titleFormat, b.text);
+
+    const D2D1_RECT_F exportRect = D2D1::RectF(64.0f, 12.0f, 120.0f, 40.0f);
+    g_target->FillRectangle(exportRect, b.fill);
+    g_target->DrawRectangle(exportRect, b.edge, 0.5f);
+    DrawTextLine(L"\u5bfc\u51fa PNG", exportRect, g_axisFormat, b.text);
+}
+
+// 时间轴总跨度覆盖完整一天，超出 7:00–22:00 的事件也可滚动看到。
+constexpr std::int64_t kAxisStart = 0;
+constexpr std::int64_t kAxisEnd = 86400;
+
+float timeToY(std::int64_t seconds) {
+    return static_cast<float>(seconds) / 3600.0f * kPixelsPerHour;
+}
+
+int dayViewContentHeight() {
+    return static_cast<int>(timeToY(kAxisEnd) + kBottomMargin);
+}
+
+void UpdateScrollRange(HWND hwnd) {
+    RECT rect = {};
+    GetClientRect(hwnd, &rect);
+    const int viewport = rect.bottom - static_cast<int>(kTopBar);
+    const int content = dayViewContentHeight();
+    SCROLLINFO info = {};
+    info.cbSize = sizeof(info);
+    info.fMask = SIF_RANGE | SIF_PAGE;
+    info.nMin = 0;
+    info.nMax = content > viewport ? content - viewport : 0;
+    info.nPage = viewport;
+    SetScrollInfo(hwnd, SB_VERT, &info, TRUE);
 }
 
 void RenderDayView(const Brushes& b, const D2D1_SIZE_F& size) {
-    const float axisX = 62.0f;
+    const float axisX = kAxisWidth;
     const float x0 = axisX + 14.0f;
-    const float x1 = size.width - 24.0f;
+    const float x1 = size.width - kRightMargin;
     const float y0 = kTopBar;
-    const float y1 = size.height - 20.0f;
-    const double span = static_cast<double>(kViewEnd - kViewStart);
+    const float offset = -static_cast<float>(g_scrollY);
 
-    const auto timeToY = [&](std::int64_t t) {
-        const double ratio = static_cast<double>(t - kViewStart) / span;
-        return y0 + static_cast<float>(ratio) * (y1 - y0);
-    };
-
-    for (int hour = 7; hour <= 22; ++hour) {
-        const float y = timeToY(hour * 3600);
+    for (int hour = 0; hour <= 24; ++hour) {
+        const float y = y0 + timeToY(hour * 3600) + offset;
         g_target->DrawLine(D2D1::Point2F(axisX - 6.0f, y),
                            D2D1::Point2F(axisX, y), b.dim, 1.0f);
-        if (hour % 2 == 0 || hour == 7) {
+        if (hour % 2 == 0) {
             DrawTextLine(formatClock(hour * 3600),
                          D2D1::RectF(8.0f, y - 8.0f, axisX - 8.0f, y + 8.0f),
                          g_axisFormat, b.dim);
         }
     }
-    g_target->DrawLine(D2D1::Point2F(axisX, y0), D2D1::Point2F(axisX, y1),
+    g_target->DrawLine(D2D1::Point2F(axisX, y0),
+                       D2D1::Point2F(axisX, y0 + timeToY(kAxisEnd) + offset),
                        b.dim, 1.0f);
 
     auto& registry = bp::api::Registry::instance();
@@ -303,8 +338,8 @@ void RenderDayView(const Brushes& b, const D2D1_SIZE_F& size) {
         const float shift = static_cast<float>(block.lane) * kLaneShift;
         const float blockX = x0 + shift;
         const float blockW = workWidth * 0.68f - shift;
-        float yTop = timeToY(blockStart);
-        float yBottom = timeToY(blockEnd);
+        float yTop = y0 + timeToY(blockStart - dayBase) + offset;
+        float yBottom = y0 + timeToY(blockEnd - dayBase) + offset;
         if (isDeadline) {
             yTop -= 12.0f;
             yBottom = yTop + 30.0f;
@@ -460,6 +495,203 @@ void RenderMonthView(const Brushes& b, const D2D1_SIZE_F& size) {
     }
 }
 
+bool ExportDayViewPng(const std::wstring& path) {
+    if (!g_wic) {
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                         CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_wic));
+    }
+    if (!g_wic) {
+        return false;
+    }
+
+    const UINT width = 1080;
+    const UINT height = static_cast<UINT>(dayViewContentHeight());
+
+    IWICBitmap* wicBitmap = nullptr;
+    if (FAILED(g_wic->CreateBitmap(
+            width, height, GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapCacheOnLoad, &wicBitmap))) {
+        return false;
+    }
+
+    ID2D1RenderTarget* bitmapTarget = nullptr;
+    if (FAILED(g_factory->CreateWicBitmapRenderTarget(
+            wicBitmap, D2D1::RenderTargetProperties(), &bitmapTarget))) {
+        wicBitmap->Release();
+        return false;
+    }
+
+    bitmapTarget->BeginDraw();
+    bitmapTarget->Clear(D2D1::ColorF(0.043f, 0.055f, 0.086f, 1.0f));
+
+    ID2D1SolidColorBrush* fill = nullptr;
+    ID2D1SolidColorBrush* edge = nullptr;
+    ID2D1SolidColorBrush* highlight = nullptr;
+    ID2D1SolidColorBrush* text = nullptr;
+    ID2D1SolidColorBrush* dim = nullptr;
+    bitmapTarget->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.16f), &fill);
+    bitmapTarget->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.40f), &edge);
+    bitmapTarget->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.85f), &highlight);
+    bitmapTarget->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.95f, 1.0f, 0.95f),
+                                        &text);
+    bitmapTarget->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.10f), &dim);
+
+    const float axisX = kAxisWidth;
+    const float x0 = axisX + 14.0f;
+    const float x1 = static_cast<float>(width) - kRightMargin;
+    const float y0 = 0.0f;
+
+    for (int hour = 0; hour <= 24; ++hour) {
+        const float y = y0 + timeToY(hour * 3600);
+        bitmapTarget->DrawLine(D2D1::Point2F(axisX - 6.0f, y),
+                               D2D1::Point2F(axisX, y), dim, 1.0f);
+        if (hour % 2 == 0) {
+            const std::wstring label = formatClock(hour * 3600);
+            bitmapTarget->DrawTextW(label.c_str(),
+                                    static_cast<UINT32>(label.size()),
+                                    g_axisFormat,
+                                    D2D1::RectF(8.0f, y - 8.0f, axisX - 8.0f,
+                                                y + 8.0f),
+                                    dim);
+        }
+    }
+    bitmapTarget->DrawLine(D2D1::Point2F(axisX, y0),
+                           D2D1::Point2F(axisX, y0 + timeToY(kAxisEnd)), dim,
+                           1.0f);
+
+    auto& registry = bp::api::Registry::instance();
+    const std::int64_t dayBase =
+        kDayStart + static_cast<std::int64_t>(g_selectedDay) * kDaySeconds;
+    const std::vector<bp::Event> events =
+        registry.store()->range(dayBase, dayBase + kDaySeconds);
+    const std::vector<bp::LayoutEngine::Block> blocks =
+        registry.layoutEngine()->layout(events);
+
+    const float workWidth = x1 - x0;
+    for (const auto& block : blocks) {
+        std::vector<bp::Event> blockEvents;
+        blockEvents.reserve(block.eventIndices.size());
+        for (const auto index : block.eventIndices) {
+            blockEvents.push_back(events[index]);
+        }
+        if (blockEvents.empty()) {
+            continue;
+        }
+        const std::int64_t blockStart = blockEvents.front().start;
+        const std::int64_t blockEnd = blockEvents.front().end;
+        const bool isDeadline = blockEvents.front().kind == bp::Kind::Deadline;
+
+        const float shift = static_cast<float>(block.lane) * kLaneShift;
+        const float blockX = x0 + shift;
+        const float blockW = workWidth * 0.68f - shift;
+        float yTop = y0 + timeToY(blockStart - dayBase);
+        float yBottom = y0 + timeToY(blockEnd - dayBase);
+        if (isDeadline) {
+            yTop -= 12.0f;
+            yBottom = yTop + 30.0f;
+        }
+        if (yBottom - yTop < 26.0f) {
+            yBottom = yTop + 26.0f;
+        }
+
+        const D2D1_RECT_F rect =
+            D2D1::RectF(blockX, yTop, blockX + blockW, yBottom);
+        bitmapTarget->FillRectangle(rect, fill);
+        bitmapTarget->DrawRectangle(rect, edge, 0.5f);
+        bitmapTarget->DrawLine(D2D1::Point2F(rect.left + 8.0f, rect.top + 1.5f),
+                               D2D1::Point2F(rect.right - 8.0f, rect.top + 1.5f),
+                               highlight, 1.5f);
+        bitmapTarget->DrawLine(
+            D2D1::Point2F(rect.left + 8.0f, rect.bottom - 1.5f),
+            D2D1::Point2F(rect.right - 8.0f, rect.bottom - 1.5f), highlight,
+            1.0f);
+
+        float cursor = yTop + 7.0f;
+        const float textRight = blockX + blockW - 8.0f;
+        for (std::size_t i = 0; i < blockEvents.size(); ++i) {
+            const auto& event = blockEvents[i];
+            const std::wstring title = block.summary ? shortTitle(event)
+                                                      : toWide(event.title);
+            bitmapTarget->DrawTextW(
+                title.c_str(), static_cast<UINT32>(title.size()), g_titleFormat,
+                D2D1::RectF(blockX + 10.0f, cursor, textRight,
+                            cursor + kTitleLines),
+                text);
+            cursor += kTitleLines;
+            if (!block.summary) {
+                const std::wstring span = spanText(event);
+                bitmapTarget->DrawTextW(
+                    span.c_str(), static_cast<UINT32>(span.size()),
+                    g_timeFormat,
+                    D2D1::RectF(blockX + 10.0f, cursor, textRight,
+                                cursor + kTimeLines),
+                    dim);
+                cursor += kTimeLines;
+                const std::wstring note = toWide(event.note);
+                if (!note.empty() && yBottom - cursor > kTimeLines) {
+                    bitmapTarget->DrawTextW(
+                        note.c_str(), static_cast<UINT32>(note.size()),
+                        g_timeFormat,
+                        D2D1::RectF(blockX + 10.0f, cursor, textRight,
+                                    cursor + kTimeLines),
+                        dim);
+                    cursor += kTimeLines;
+                }
+            }
+            if (i + 1 < blockEvents.size()) {
+                bitmapTarget->DrawLine(
+                    D2D1::Point2F(blockX + 10.0f, cursor + 3.0f),
+                    D2D1::Point2F(blockX + blockW - 10.0f, cursor + 3.0f), edge,
+                    0.5f);
+                cursor += 10.0f;
+            }
+            if (cursor > yBottom - 4.0f) {
+                break;
+            }
+        }
+    }
+
+    bitmapTarget->EndDraw();
+
+    IWICBitmapEncoder* encoder = nullptr;
+    IWICStream* stream = nullptr;
+    IWICBitmapFrameEncode* frame = nullptr;
+    bool ok = false;
+
+    if (SUCCEEDED(g_wic->CreateStream(&stream))) {
+        if (FAILED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE))) {
+            stream->Release();
+            stream = nullptr;
+        }
+    }
+    if (stream && SUCCEEDED(g_wic->CreateEncoder(GUID_ContainerFormatPng,
+                                                 nullptr, &encoder))) {
+        if (SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) &&
+            SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr))) {
+            frame->Initialize(nullptr);
+            frame->SetSize(width, height);
+            WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppPBGRA;
+            frame->SetPixelFormat(&pixelFormat);
+            if (SUCCEEDED(frame->WriteSource(wicBitmap, nullptr)) &&
+                SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit())) {
+                ok = true;
+            }
+        }
+    }
+
+    if (frame) frame->Release();
+    if (encoder) encoder->Release();
+    if (stream) stream->Release();
+    if (fill) fill->Release();
+    if (edge) edge->Release();
+    if (highlight) highlight->Release();
+    if (text) text->Release();
+    if (dim) dim->Release();
+    bitmapTarget->Release();
+    wicBitmap->Release();
+    return ok;
+}
+
 void RenderView(HWND hwnd) {
     g_hits.clear();
     g_dayHits.clear();
@@ -518,15 +750,79 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_target) {
                 g_target->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
             }
+            UpdateScrollRange(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+        case WM_MOUSEWHEEL: {
+            if (g_view != ViewMode::Day) {
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            const int delta = GET_WHEEL_DELTA_WPARAM(wp);
+            g_scrollY -= delta * 64 / WHEEL_DELTA;
+            if (g_scrollY < 0) {
+                g_scrollY = 0;
+            }
+            UpdateScrollRange(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_VSCROLL: {
+            const int request = LOWORD(wp);
+            const int step = 40;
+            int newPos = g_scrollY;
+            switch (request) {
+                case SB_LINEUP: newPos -= step; break;
+                case SB_LINEDOWN: newPos += step; break;
+                case SB_PAGEUP: newPos -= 200; break;
+                case SB_PAGEDOWN: newPos += 200; break;
+                case SB_THUMBTRACK:
+                case SB_THUMBPOSITION: newPos = HIWORD(wp); break;
+                default: break;
+            }
+            RECT rect = {};
+            GetClientRect(hwnd, &rect);
+            const int viewport = rect.bottom - static_cast<int>(kTopBar);
+            const int maxPos = dayViewContentHeight() - viewport;
+            if (newPos < 0) newPos = 0;
+            if (maxPos > 0 && newPos > maxPos) newPos = maxPos;
+            if (newPos != g_scrollY) {
+                g_scrollY = newPos;
+                SetScrollPos(hwnd, SB_VERT, g_scrollY, TRUE);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
         case WM_LBUTTONDOWN: {
             const float mx = static_cast<float>(GET_X_LPARAM(lp));
             const float my = static_cast<float>(GET_Y_LPARAM(lp));
             if (mx >= 12.0f && mx <= 52.0f && my >= 12.0f && my <= 40.0f) {
                 g_view = static_cast<ViewMode>(
                     (static_cast<int>(g_view) + 1) % 3);
+                g_scrollY = 0;
+                UpdateScrollRange(hwnd);
                 InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (mx >= 64.0f && mx <= 120.0f && my >= 12.0f && my <= 40.0f) {
+                wchar_t path[MAX_PATH] = L"dayview.png";
+                OPENFILENAMEW ofn = {};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = hwnd;
+                ofn.lpstrFilter = L"PNG \u56fe\u7247 (*.png)\0*.png\0\0";
+                ofn.lpstrFile = path;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+                if (GetSaveFileNameW(&ofn)) {
+                    if (ExportDayViewPng(path)) {
+                        const std::wstring savedMsg =
+                            L"\u5df2\u5bfc\u51fa\u5230 " + std::wstring(path);
+                        MessageBoxW(hwnd, savedMsg.c_str(),
+                                    L"\u5bfc\u51fa\u6210\u529f", MB_OK);
+                    } else {
+                        MessageBoxW(hwnd, L"\u5bfc\u51fa\u5931\u8d25",
+                                    L"\u9519\u8bef", MB_ICONERROR);
+                    }
+                }
                 return 0;
             }
             if (g_view == ViewMode::Day) {
@@ -546,6 +842,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     my >= hit.rect.top && my <= hit.rect.bottom) {
                     g_selectedDay = hit.day;
                     g_view = ViewMode::Day;
+                    g_scrollY = 0;
+                    UpdateScrollRange(hwnd);
                     InvalidateRect(hwnd, nullptr, FALSE);
                     break;
                 }
@@ -577,6 +875,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                         reinterpret_cast<IUnknown**>(&g_dwrite));
     CreateTextFormats();
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                     IID_PPV_ARGS(&g_wic));
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
@@ -614,5 +915,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (g_target) g_target->Release();
     ReleaseTextFormats();
     if (g_factory) g_factory->Release();
+    if (g_wic) g_wic->Release();
+    CoUninitialize();
     return static_cast<int>(msg.wParam);
 }
