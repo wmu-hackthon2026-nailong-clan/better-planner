@@ -13,9 +13,8 @@ std::map<std::int64_t, std::vector<Event>> groupByDay(
         const std::int64_t spanEnd =
             std::max(event.end, event.start + 1);
         const std::int64_t first = std::max(event.start, dayStart);
-        const std::int64_t last = std::min(spanEnd, dayStart + daySeconds);
         for (std::int64_t day = (first / daySeconds) * daySeconds;
-             day < last; day += daySeconds) {
+             day < spanEnd; day += daySeconds) {
             if (day >= dayStart) {
                 grouped[day].push_back(event);
             }

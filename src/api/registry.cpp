@@ -24,9 +24,9 @@ std::shared_ptr<bp::EventStore> Registry::store() const {
     return store_;
 }
 
-std::shared_ptr<bp::LayoutEngine> Registry::layoutEngine() const {
+std::shared_ptr<bp::LayoutEngine> Registry::layoutEngine() {
     if (!layout_) {
-        return std::make_shared<bp::LayoutEngine>();
+        layout_ = std::make_shared<bp::LayoutEngine>();
     }
     return layout_;
 }

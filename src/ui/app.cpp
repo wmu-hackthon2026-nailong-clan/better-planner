@@ -26,7 +26,7 @@ void CreateTarget(HWND hwnd) {
         &g_target);
 }
 
-void RenderDemoGlass() {
+void RenderDemoGlass(HWND hwnd) {
     g_target->BeginDraw();
     g_target->Clear(D2D1::ColorF(0.043f, 0.055f, 0.086f, 1.0f));
 
@@ -50,7 +50,12 @@ void RenderDemoGlass() {
     fill->Release();
     edge->Release();
     highlight->Release();
-    g_target->EndDraw();
+    const HRESULT hr = g_target->EndDraw();
+    if (hr == static_cast<HRESULT>(D2DERR_RECREATE_TARGET)) {
+        g_target->Release();
+        g_target = nullptr;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -59,7 +64,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             PAINTSTRUCT ps = {};
             BeginPaint(hwnd, &ps);
             if (!g_target) CreateTarget(hwnd);
-            if (g_target) RenderDemoGlass();
+            if (g_target) RenderDemoGlass(hwnd);
             EndPaint(hwnd, &ps);
             return 0;
         }

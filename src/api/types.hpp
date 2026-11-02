@@ -41,7 +41,8 @@ struct ScheduleInput {
 Event toEvent(const DeadlineInput& input);
 
 // 归一化：形式② -> Event。end 与 durationSeconds 均缺失时抛出
-// std::invalid_argument（由调用方决定如何向用户呈现）。
+// std::invalid_argument；归一化后终末早于起始（含负持续时间）同样抛出
+// std::invalid_argument，由调用方决定如何向用户呈现。
 Event toEvent(const ScheduleInput& input);
 
 }  // namespace bp::api

@@ -5,6 +5,7 @@
 
 #include "api/types.hpp"
 #include "core/layout.hpp"
+#include "core/queries.hpp"
 #include "core/store.hpp"
 
 using namespace bp;
@@ -153,17 +154,91 @@ void testApiNormalization() {
     check(threw, "api: missing end throws");
 }
 
+void testGroupByDayMultiDayEvent() {
+    std::vector<Event> events = {
+        makeEvent(0, 86400 * 3, "trip"),
+    };
+    const auto grouped = groupByDay(events, 0, 86400);
+    check(grouped.size() == 3, "group: three days");
+    check(grouped.count(0) == 1, "group: day0");
+    check(grouped.count(86400) == 1, "group: day1");
+    check(grouped.count(86400 * 2) == 1, "group: day2");
+}
+
+void testGroupByDayDeadlineLandsInOwnDay() {
+    std::vector<Event> events = {
+        makeEvent(86400 + 36000, 86400 + 36000, "hw"),
+    };
+    const auto grouped = groupByDay(events, 0, 86400);
+    check(grouped.size() == 1, "group deadline: one day");
+    check(grouped.count(86400) == 1, "group deadline: next day key");
+    check(grouped.at(86400).size() == 1, "group deadline: one event");
+}
+
+void testGroupByDayIgnoresEventsBeforeWindow() {
+    std::vector<Event> events = {
+        makeEvent(-86400, -3600, "past"),
+        makeEvent(-3600, 3600, "straddle"),
+        makeEvent(4000, 5000, "in"),
+    };
+    const auto grouped = groupByDay(events, 0, 86400);
+    check(grouped.size() == 1, "group window: one day only");
+    check(grouped.at(0).size() == 2, "group window: straddle+in");
+}
+
+void testApiRejectsInvertedSchedule() {
+    bp::api::ScheduleInput inverted;
+    inverted.start = 100;
+    inverted.end = 50;
+    bool threw = false;
+    try {
+        bp::api::toEvent(inverted);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "api: end<start throws");
+
+    bp::api::ScheduleInput negative;
+    negative.start = 100;
+    negative.durationSeconds = -10;
+    threw = false;
+    try {
+        bp::api::toEvent(negative);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    check(threw, "api: negative duration throws");
+}
+
 }  // namespace
 
 int main() {
+    std::cout << std::unitbuf;
+    std::cout << "start tests" << std::endl;
     testIdenticalSpansMergeIntoOneBlock();
+    std::cout << "ok identical" << std::endl;
     testDisjointEventsStayOnMainLane();
+    std::cout << "ok disjoint" << std::endl;
     testContainedEventShiftsRight();
+    std::cout << "ok contained" << std::endl;
     testPartialOverlapShiftsRight();
+    std::cout << "ok partial" << std::endl;
     testChainUsesLowestFreeLane();
+    std::cout << "ok chain" << std::endl;
     testDeadlineGrouping();
+    std::cout << "ok deadline" << std::endl;
     testStoreRoundTrip();
+    std::cout << "ok store" << std::endl;
     testApiNormalization();
+    std::cout << "ok api" << std::endl;
+    testGroupByDayMultiDayEvent();
+    std::cout << "ok group multi" << std::endl;
+    testGroupByDayDeadlineLandsInOwnDay();
+    std::cout << "ok group deadline" << std::endl;
+    testGroupByDayIgnoresEventsBeforeWindow();
+    std::cout << "ok group window" << std::endl;
+    testApiRejectsInvertedSchedule();
+    std::cout << "ok inverted" << std::endl;
     if (g_failures != 0) {
         std::cout << g_failures << " check(s) failed" << std::endl;
         return 1;

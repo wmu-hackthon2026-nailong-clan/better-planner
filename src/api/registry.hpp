@@ -30,7 +30,7 @@ public:
     std::shared_ptr<bp::EventStore> store() const;
 
     // 获取排布引擎；未注册时内部新建默认实例并缓存。
-    std::shared_ptr<bp::LayoutEngine> layoutEngine() const;
+    std::shared_ptr<bp::LayoutEngine> layoutEngine();
 
 private:
     Registry() = default;
