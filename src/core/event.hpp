@@ -5,7 +5,7 @@
 //   * 本文件写清楚注释，对应实现文件不写注释。
 //
 // 时间的统一口径：
-//   * 全部使用 Unix epoch 秒（UTC），与现有 Python 版 Keqi 保留毫秒的做法区分；
+//   * 全部使用 Unix epoch 秒（UTC），与旧 Python 版保留毫秒的做法区分；
 //   * 时区换算（北京时间 Asia/Shanghai）只发生在 UI 显示层与导入导出层，
 //     core 层不做任何本地时间解析。
 #pragma once

@@ -22,7 +22,7 @@ jobs:
       - name: Run offline tests (no platform credentials)
         run: python -m unittest discover -s tests -v
       - name: Check frontend syntax
-        run: node --check web/app.js
+        run: node --check web/connections.js
       - name: Check installer syntax in Windows PowerShell
         shell: powershell
         run: |

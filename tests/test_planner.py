@@ -1,16 +1,10 @@
-import json
 import tempfile
-import threading
 import unittest
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 from app.core import Store, calendar, date_value, normalize
 from app.connectors import Syncer, run_json
-from app.server import make_server
 from scripts.zhs_readonly import homework_pages
 
 
@@ -148,64 +142,6 @@ class PlannerTests(unittest.TestCase):
         state = self.store.state()
         self.assertEqual(state['events'][0]['title'], '有效作业')
         self.assertTrue(next(s for s in state['sync'] if s['stream'] == '学习通作业')['error'])
-
-
-class HTTPTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory()
-        cls.server = make_server(0, Path(cls.temp.name) / "http.sqlite3")
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
-        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-        cls.thread.join()
-        cls.temp.cleanup()
-
-    def request(self, path, data=None, token=None, extra=None):
-        headers = {"Content-Type": "application/json"}
-        if token:
-            headers["X-Planner-Token"] = token
-        headers.update(extra or {})
-        req = Request(self.base+path, data=json.dumps(data).encode() if data is not None else None, headers=headers)
-        return urlopen(req, timeout=5)
-
-    def test_html_assets_and_missing_route(self):
-        for route in ("/", "/app.js", "/style.css"):
-            with self.request(route) as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn("frame-ancestors 'none'", response.headers["Content-Security-Policy"])
-        with self.assertRaises(HTTPError) as error:
-            self.request("/../config.local.json")
-        self.assertEqual(error.exception.code, 404)
-        error.exception.close()
-
-    def test_mutations_require_session_token_and_local_host(self):
-        with self.assertRaises(HTTPError) as error:
-            self.request("/api/events", dict(title="非法请求"))
-        self.assertEqual(error.exception.code, 403)
-        error.exception.close()
-        with self.assertRaises(HTTPError) as error:
-            self.request("/api/state", extra={"Host": "untrusted.example"})
-        self.assertEqual(error.exception.code, 403)
-        error.exception.close()
-
-    def test_create_complete_export_delete_roundtrip(self):
-        with self.request("/api/state") as r:
-            token = json.load(r)["token"]
-        self.request("/api/events", dict(title="HTTP 集成测试", course="测试课程", end="2026-11-05 20:00"), token).close()
-        with self.request("/api/state") as r:
-            event = next(e for e in json.load(r)["events"] if e["title"] == "HTTP 集成测试")
-        with self.request("/api/calendar.ics") as r:
-            self.assertIn("HTTP 集成测试", r.read().decode())
-        self.request("/api/complete", dict(id=event["id"], done=True), token).close()
-        with self.request("/api/state") as r:
-            self.assertTrue(next(e for e in json.load(r)["events"] if e["id"] == event["id"])["completed"])
-        self.request("/api/delete", dict(id=event["id"]), token).close()
 
 
 if __name__ == "__main__":

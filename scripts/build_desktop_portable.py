@@ -79,7 +79,7 @@ def build() -> None:
     if not runtime_zip.exists() or not (packages / "zhs").is_dir() or not (packages / "xuexitong_mcp").is_dir():
         raise RuntimeError("先运行 python scripts/setup_desktop.py 准备运行时与连接器依赖")
 
-    target = ROOT / "dist" / "Keqi-Desktop-Windows-x64"
+    target = ROOT / "dist" / "Better-Planner-Windows-x64"
     if target.exists() and "--refresh" not in sys.argv:
         raise RuntimeError("打包目录已存在；请删除或加 --refresh")
     target.mkdir(parents=True, exist_ok=True)
@@ -105,15 +105,15 @@ def build() -> None:
                     dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
     # 4) 启动脚本（ASCII 批处理，避免代码页问题）
-    (target / "Start-Keqi.bat").write_bytes(
+    (target / "Start-BetterPlanner.bat").write_bytes(
         b'@echo off\r\ncd /d "%~dp0"\r\nstart "" "%~dp0better_planner.exe"\r\n'
-        b'if errorlevel 1 (echo Failed to start Keqi. & pause)\r\n')
+        b'if errorlevel 1 (echo Failed to start Better Planner. & pause)\r\n')
 
     # 5) 使用说明
     (target / "使用说明.txt").write_text(
-        "课期 Windows x64 桌面版\n\n"
+        "Better Planner Windows x64 桌面版\n\n"
         "1. 将整个 ZIP 解压到可写目录（保持完整文件夹，勿单独拖出 exe）。\n"
-        "2. 双击 Start-Keqi.bat 启动桌面应用。\n"
+        "2. 双击 Start-BetterPlanner.bat 启动桌面应用。\n"
         "3. 首次使用：工具栏「连接与同步」打开本机账号页，学习通账号密码登录、智慧树扫码登录。\n"
         "4. 点「连接与同步」同步平台；点「导入课表」导入教务系统课表 JSON。\n\n"
         "数据保存在本目录 data/ 下；请勿把使用后的文件夹直接发给别人，分享原始 ZIP。\n"
@@ -147,11 +147,11 @@ def build() -> None:
         cwd=target, check=True)
 
     # 8) 打包 zip + 校验
-    archive = ROOT / "dist" / "Keqi-Desktop-Windows-x64.zip"
+    archive = ROOT / "dist" / "Better-Planner-Windows-x64.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for path in sorted(target.rglob("*")):
             if path.is_file() and "__pycache__" not in path.parts:
-                z.write(path, "Keqi-Desktop-Windows-x64/" + path.relative_to(target).as_posix())
+                z.write(path, "Better-Planner-Windows-x64/" + path.relative_to(target).as_posix())
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_suffix(".zip.sha256").write_text(
         digest + "  " + archive.name + "\n", encoding="ascii")

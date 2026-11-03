@@ -61,7 +61,7 @@ def run_json(command, cwd=None, timeout=240, extra_env=None):
                                 timeout=timeout, env=env, shell=False,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except FileNotFoundError as exc:
-        raise RuntimeError("平台连接组件未就绪，请使用完整的课期启动包") from exc
+        raise RuntimeError("平台连接组件未就绪，请使用完整的 Better Planner 启动包") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("查询超时；保留上次数据，请稍后重试") from exc
     if result.returncode:

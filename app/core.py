@@ -165,7 +165,7 @@ def calendar(events):
     def utc(value):
         return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Keqi//Planner//ZH", "CALSCALE:GREGORIAN", "X-WR-CALNAME:课期 · 课表与截止日期"]
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//BetterPlanner//Planner//ZH", "CALSCALE:GREGORIAN", "X-WR-CALNAME:Better Planner · 课表与截止日期"]
     for e in events:
         if e["completed"] or not (e["end"] or e["start"]):
             continue

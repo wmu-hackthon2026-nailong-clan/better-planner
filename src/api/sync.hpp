@@ -1,6 +1,6 @@
 // api/sync.hpp —— 学习通/智慧树平台同步（接口层契约）
 //
-// 同步复用旧 Python 版课期 Keqi 的只读连接器脚本（不重写爬虫）：
+// 同步复用旧 Python 版只读连接器脚本（不重写爬虫）：
 //   * 学习通：scripts/xxt_readonly.py，输出 {"date","start","end","name",
 //     "location","teacher"} 课表行，或 {"external_id","kind","title",
 //     "course","start","deadline","completed","url"} 作业/考试；
