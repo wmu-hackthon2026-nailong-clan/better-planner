@@ -1,9 +1,13 @@
+import importlib.util
 import unittest
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from scripts.zhs_ai_readonly import BASIC, TASKS, EXAMS, ai_query, collect_ai, task_event
+
+HAS_ZHS = importlib.util.find_spec("zhs") is not None
+ZH_SKIP = "需要先装连接器依赖（scripts/install-connectors.ps1），本机无 zhs 时跳过"
 
 
 class AiReadonlyTests(unittest.TestCase):
@@ -57,6 +61,7 @@ class AiReadonlyTests(unittest.TestCase):
             ai_query(self.session, "stu/studyRecord/completed", {})
         self.session.api_query.assert_not_called()
 
+    @unittest.skipUnless(HAS_ZHS, ZH_SKIP)
     def test_request_uses_capture_verified_date_and_encrypted_course_pair(self):
         from zhs.crypto import Cipher
         key, iv = b"0123456789abcdef", b"abcdef0123456789"
@@ -70,6 +75,7 @@ class AiReadonlyTests(unittest.TestCase):
         self.assertEqual(json.loads(Cipher(key, iv).decrypt(body["secretStr"])), params)
         self.assertEqual(self.session.api_query.call_args.kwargs["content_type"], "json")
 
+    @unittest.skipUnless(HAS_ZHS, ZH_SKIP)
     def test_missing_success_code_is_not_a_successful_empty_task_list(self):
         self.session.crypto.key_bytes.return_value = b"0123456789abcdef"
         self.session.api_query.return_value = {"data": []}

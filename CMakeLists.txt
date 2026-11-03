@@ -28,7 +28,7 @@ target_include_directories(bp_api PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_part
 target_link_libraries(bp_api PUBLIC bp_core PRIVATE ws2_32)
 
 add_executable(better_planner WIN32 src/ui/app.cpp src/ui/liquid_glass.cpp)
-target_link_libraries(better_planner PRIVATE bp_core bp_api d2d1 user32 gdi32 shell32 comctl32)
+target_link_libraries(better_planner PRIVATE bp_core bp_api d2d1 comdlg32 comctl32 user32 gdi32 shell32)
 target_compile_definitions(better_planner PRIVATE UNICODE _UNICODE NOMINMAX)
 # 挂载 comctl32 v6 manifest，确保 TaskDialog 等公共控件显示正确样式。
 target_sources(better_planner PRIVATE src/ui/app.manifest)

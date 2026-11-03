@@ -1,189 +1,111 @@
-# 课期 Keqi
+# Better Planner
 
-> 桌面主线：`build/better_planner.exe`。工具栏“连接与同步”打开本机账号页，支持学习通账号密码登录与智慧树扫码登录；同步后的日程自动回填桌面。首次安装连接环境运行 `python scripts/setup_desktop.py`。详见 [桌面登录同步](docs/DESKTOP_SYNC.md)、[液态玻璃实现](docs/LIQUID_GLASS.md)、[代码签名](docs/SIGNING.md)。下文保留原 Python 网页版说明。
+面向学生的日历应用：把分散在各学习平台上的**作业、考试、课表**汇集到同一条时间轴上，用磨砂玻璃块与 deadline 亮线呈现一天的节奏，支持日 / 周 / 月三种进程视图。
 
-本地运行的课表与截止日期汇总工具：将**学习通课表、学习通作业 / 考试、智慧树共享课及 AI 知识图谱任务**汇总到同一个看板。
+## 为什么做它
 
-当前是 Python + 浏览器的本地应用，尚未迁移到 WPF / WinUI。开发检查、提交范围和后续任务见 [CONTRIBUTING.md](CONTRIBUTING.md)。离线测试通过不代表平台在线接口已验证。
+学生的 deadlines 散落各处：学习通的作业、智慧树的考试、教务的课表、群里随口通知的截止日期。Better Planner 做两件事：
 
-## 桌面版功能
+1. **汇集** —— 通过连接器子进程从各平台拉取任务，统一映射为事件入库，重复同步自动去重；
+2. **呈现** —— 日程按实际时长占位为磨砂玻璃块，deadline 以亮线钉在时刻上，重叠自动右移嵌套，同刻自动合并，一眼看清"什么时候忙、什么时候死线"。
 
-桌面主线是 Windows 原生应用 `build/better_planner.exe`（C++20 + Win32 + Direct2D/DirectWrite），无 Electron、无浏览器内核，体积小、启动快。
+## 核心特性
 
-- **日 / 周 / 月三视图**：日视图为 7:00–23:00 时间轴；周视图七列时间网格，相同时间合并、交叉错位；月视图完整月份网格（每格最多 3 条摘要，其余显示“还有 N 项”）。
-- **今日概览**：右侧列出当天安排与截止事项，点击可看详情。
-- **今天 + 前后导航**：一键回今天、按日/周/月前后翻页。
-- **连接与同步**：工具栏“连接与同步”打开本机账号页，学习通账号密码登录、智慧树扫码登录；同步后日程自动回填，弹窗展示本次明细（置顶）。
-- **导入课表**：导入教务系统导出的课表 JSON（含段级单双周解析）；内置“抓课表”书签脚本，一键复制后到浏览器课表页点击即可下载 JSON。课表周次按「学期第 1 周」展开，需在 `config.local.json` 配置 `semester_start`（学期第一周周一的日期，如 `"2026-09-07"`）；未配置时按当前周估算，周次会整体错位。
-- **导出长图**：一键把日/周视图导出为 PNG 长图。
-- **液态玻璃**：侧栏开关，磨砂玻璃材质，关闭时纯色回退。
+- **三种进程视图**：日（完整时间轴）→ 周（七列压缩）→ 月（每日摘要），折叠按钮循环切换。
+- **磨砂玻璃视觉**：半透明磨砂 + 背景模糊 + 边缘高光 + 上下隔离线；刻意不做液态折射，避免几十个信息块互相干扰。
+- **deadline 亮线**：单点截止时刻以高亮横线呈现；多条撞线时同侧堆叠（纵向微偏移 + 横向缩进）。
+- **重叠处理**：时间交叠的日程块向右缩进嵌套；同一时刻的事件合并为一个块，标题以「·」并列。
+- **统一区间模型**：对外提供三种提交入口——单点 deadline、起始+时长、起始+终末——内部归一到 `[start, end)` 区间，数据层与 UI 层无感知。
+- **平台同步去重**：外部事件按 `(source, externalId)` 去重，重复同步只更新原记录；本地已勾选的完成标记不会被上游覆盖。
+- **凭据安全**：登录凭据只通过环境变量注入连接器子进程，绝不写进命令行参数，不读、不存、不转发任何 Cookie。
 
-命令行：`--demo` 载入演示数据；`--week`/`--month` 指定初始视图；`--no-glass` 关闭玻璃；`--export <路径>` / `--export-week <路径>` 直接导出 PNG。
+## 架构
 
-未实现（后续）：桌面内新增 / 编辑 / 删除事件、操作提醒推送。当前新增仍走网页版接口或手动补录。
+分层设计，每层职责单一、可独立编译测试：
 
-### 打包与分发
-
-桌面版 exe **不进 git**（`build/`、`dist/` 已忽略），通过打包脚本产出便携 zip 分发给使用者：
-
-```powershell
-# 1. 编译桌面版（需 MSVC + vcvars64，见 scripts/build.ps1）
-powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
-
-# 2. 打包（自动带上 exe、VC++ 运行库、嵌入式 Python 与连接器）
-.\runtime\python.exe scripts\build_desktop_portable.py
+```
+src/
+├── data/      数据层：事件模型、存储、时间线布局引擎（纯计算，零 I/O 零图形依赖）
+│              Types / Clock / Text / EventStore / TimelineLayout
+├── api/       接口层：ICalendarApi 抽象契约 + CalendarApi 默认实现
+│              四种写入通道：deadline / 起始+时长 / 起始+终末 / 外部同步
+├── ingest/    接入层：自带 JSON 解析器（零第三方依赖）、平台任务解析、
+│              连接器子进程桥接（Interactive / CaptureStdout 两种模式）
+└── ui/        表现层：日 / 周 / 月视图几何计算，磨砂玻璃样式参数集中管理
+               只做比例换算，不做任何布局决策
 ```
 
-产物为 `dist/Keqi-Desktop-Windows-x64.zip`（含 `better_planner.exe`、MSVC 运行库 DLL、`runtime/`、`app/`、`scripts/`）。使用者解压整个文件夹后双击 `Start-Keqi.bat` 即可运行，无需装 Git/Python/编译器。
+关键约束：
 
-> 注意区分：`build_desktop_portable.py` 打包的是 **C++ 桌面版**；`build_portable.py` 打包的是旧 **Python 网页版**（产出 `Keqi-Windows-x64.zip`）。
+- 时间统一为毫秒级 `int64_t`，区间左闭右开 `[start, end)`；
+- 布局引擎输出**归一化比例**而非像素，窗口缩放不必重算结构；
+- 全部视觉参数集中在 `GlassPanelStyle`，渲染器只读不改；
+- UI 层无任何平台图形依赖，可在任意平台编译验证。
 
-## 给普通使用者：便携版，无需 Git / Python
+## 构建
 
-将 `dist/Keqi-Windows-x64.zip` 发给使用者，**解压整个文件夹后双击 `Start-Keqi.bat`**。程序自带官方 Python 运行环境和两个连接器，自动打开浏览器；运行期间保留命令窗口。
+### 一键构建（推荐）
 
-点击页面右上角「连接账号」：学习通输入手机号和密码；智慧树点击「获取登录二维码」，使用知到 App 扫码确认。登录后点击「同步平台」。自动同步默认 30 分钟一次。
-
-学习通默认只保留本次会话中的密码；勾选「记住账号密码」后使用 Windows DPAPI 加密，绑定当前 Windows 用户。平台 Cookie 与数据库保存在 `data/`。请分享原始 ZIP，**不要把使用后的文件夹直接发给别人**。
-
-这是 Windows x64 便携包，不是安装向导，也没有代码签名。连接和同步依赖平台接口及账号状态，仍需实际账号验证；遇到平台验证码请在官方客户端完成验证后重试。
-
-以下为源码运行与开发者安装说明。
-
-核心应用使用 Python 标准库 + 原生 HTML/CSS/JS，无需 Node、前端构建或数据库安装。界面和数据服务均留在本机，不部署到公共网站。
-
-## 启动
-
-需要 Python 3.11+（智慧树连接器需要 Python 3.13 / 3.14）。在项目目录执行：
-
-```powershell
-python -m app.server
+```cmd
+build.cmd
 ```
 
-打开 <http://127.0.0.1:8765>。初次启动为空数据，可直接添加课程 / 任务，或在「数据连接」中导入 `examples/tasks.json` 查看流程。示例不会自动混入真实数据。
+无需 CMake，直接调用 MSVC 编译。要求：
 
-启用定时同步（进程运行期间生效）：
+- Visual Studio Build Tools（脚本内路径为 MSVC 14.51）
+- Windows SDK 10.0.26100
 
-```powershell
-python -m app.server --auto-sync
-# 或
-.\run.ps1
+> 注意：本机 `vcvars64.bat` 不可用（内部调 `reg.exe` 会被安全策略拦截），  
+> 因此脚本显式设置 INCLUDE / LIB 环境变量。若你的工具链版本不同，  
+> 修改脚本顶部的 `VCROOT` / `SDKVER` 即可。
+
+### CMake（可选）
+
+```cmd
+cmake -B build -S .
+cmake --build build
 ```
 
-默认每 30 分钟同步一次，最短 15 分钟。也可在页面点击「同步平台」。后台查询可能耗时数分钟，不阻塞看板；两次同步不会重叠。端口被占用可用 `--port 8766`。
+## 验证工具
 
-## 连接两个平台
+构建产出四个控制台程序，各自验证一层链路：
 
-连接器复用独立的开源项目，核心应用通过子进程读取 JSON，不复制上游代码。需要安装 Git，网络能访问 GitHub / PyPI。
+| 程序                   | 验证内容                                     |
+| -------------------- | ---------------------------------------- |
+| `bp_preview.exe`     | 布局引擎 + 日/周/月几何，ASCII 时间条输出               |
+| `ingest_preview.exe` | 平台 JSON → 事件映射（作业转 deadline、考试转日程、已完成跳过） |
+| `bridge_preview.exe` | 全链路：子进程 → 管道捕获 → JSON 解析 → 入库 → 二次同步去重   |
+| `export_layout.exe`  | 用真实布局引擎算出像素几何，注入 HTML 模板生成可视化预览          |
 
-```powershell
-.\scripts\install-connectors.ps1
+## 可视化预览
+
+在原生窗口落地之前，可以直接看到布局的真实效果：
+
+```cmd
+build\export_layout.exe
+start build\preview.html
 ```
 
-脚本会将仓库和各自 Python 虚拟环境放在 `.deps/`，生成 `config.local.json`；已有配置不会覆盖。安装使用执行时的上游版本，上游变更可能影响兼容性，安装后建议记录 `git -C .deps/xuexitong rev-parse HEAD` 与 `git -C .deps/zhs rev-parse HEAD` 以便复现。安装完成后仍需登录并验证实际同步结果。
+预览页由 C++ 布局引擎的真实输出驱动：左上角折叠按钮循环切换日 → 周 → 月，磨砂玻璃、亮线堆叠、重叠右移、「·」合并均为引擎计算结果，非手写演示。
 
-### 学习通：课表、作业与考试
+## 还差什么
 
-使用 [DanMo661/xuexitong-cli](https://github.com/DanMo661/xuexitong-cli)。在启动服务的 PowerShell 中设置环境变量（不要把真实账号填进仓库文件）：
+- [ ] **原生 GUI 窗口**：WinUI 3 + Direct2D 磨砂渲染器（背景模糊用 D2D 内建 GaussianBlur 等 effect，不写 HLSL）；当前由 HTML 预览顶替。
+- [ ] **端到端同步实测**：连接器桥接与解析器已就绪，登录由用户在弹出的控制台里亲自完成（输密码 / 扫码，凭据只走环境变量）。但「登录 → 拉取 → 解析入库」整条链路目前只用过本地 JSON 样例验证，尚未用真实平台账号完整跑通。
+- [ ] **事件编辑界面**：当前事件只能经 API 写入，缺少图形界面的增删改。
+- [ ] **持久化**：事件目前只在内存中，重启即丢。
+- [ ] **提醒通知**：deadline 临近提醒（系统通知 / 声音）未实现。
+- [ ] **同步手机端**
 
-```powershell
-$env:CHAOXING_PHONE = Read-Host '学习通手机号'
-$securePassword = Read-Host '学习通密码' -AsSecureString
-$env:CHAOXING_PASSWORD = [System.Net.NetworkCredential]::new('', $securePassword).Password
-.\.deps\xxt-env\Scripts\python.exe -m xuexitong_mcp.cli whoami --json
-python -m app.server --auto-sync
+## 目录结构
+
 ```
-
-账号会被子进程继承；也可以按照上游说明在 `.deps/xuexitong/config.json` 配置账号。登录态由上游保存在本地。
-
-实际调用以下只读命令：
-
-```text
-xxt week --json
-xxt hw --all-courses --json
-xxt exam --json
+better planner/
+├── CMakeLists.txt          CMake 构建（可选）
+├── build.cmd               一键 MSVC 构建脚本
+├── install-winui.ps1       安装 WinUI / Windows App SDK 工作负载（为原生 GUI 准备）
+├── src/                    核心代码（data / api / ingest / ui 四层）
+├── tools/                  四个控制台验证工具
+├── web/                    HTML 预览模板
+└── build/                  构建产物
 ```
-
-作业使用 `--all-courses`，避免只看课表内课程而漏掉网课任务；上游该命令输出待交作业。课表当前同步的是**当前教学周和下一教学周**，历史周数据累计保留，未来周可用上游 `xxt week 12 --json` 导出后在页面按「课表」类型导入。页面切周本身不触发查询。考试的学期范围沿用上游默认行为。
-
-手动安装时复制 `config.example.json` 为 `config.local.json`，`xxt_command` 填字符串数组，例如 `["C:/.../python.exe", "-m", "xuexitong_mcp.cli"]`，`xxt_cwd` 填上游仓库绝对路径。不要把整个命令写成一个字符串。
-
-### 智慧树：共享课与 AI 知识图谱
-
-使用 [pjm314159/zhs](https://github.com/pjm314159/zhs) 的会话与查询接口（GPL-3.0；其中会话加密用的 `ai_key`/`iv` 等参数来自该开源项目，非智慧树官方公开接口）。先运行：
-
-```powershell
-.\.deps\zhs-env\Scripts\zhs.exe init
-.\.deps\zhs-env\Scripts\zhs.exe login
-```
-
-界面扫码后的 Cookie 保存在 `data/zhs/.zhs/`。上游当前版本的 `.zhs/` 相对于启动工作目录，并非固定用户主目录。命令行登录时请先进入 `data/zhs/` 再执行。`config.local.json` 中的 `zhs_python` 指向安装了该项目的 Python；省略则使用当前 Python。
-
-本项目的 `scripts/zhs_readonly.py` 只调用课程列表、`getStudentHomework` 和 `exam_list`，不调用答题、开考、提交或刷课功能。作业读取未提交和已提交两组，按原始 `endDate` 汇总截止时间；考试读取未完成和已完成两组。
-
-**当前覆盖范围：知到共享课作业/考试，以及 AI 知识图谱课程发布任务、考试待办和课程知识点进度。翻转课 / Hike 尚未自动接入**。AI 进度在同步明细中展示，不生成虚构日历日期。上游知到考试代码对不同考试域 SSO 有待验证的假设，可能出现作业能读、考试失败的情况；看板会显示部分失败，不能将它当成“没有考试”。
-
-## 已实现
-
-- 学习总览：今日课程、待办数量、72 小时内截止、逾期任务。
-- 周课表：按日期展示课程和考试，支持前后翻周。
-- 截止清单：按截止时间排序，支持平台 / 状态筛选与课程关键词搜索；没有截止时间的任务单独显示“未知”，不猜日期。
-- 手动补录课程、作业、考试，支持删除手动记录。
-- 本地完成标记不会提交到平台；平台已完成任务无法通过本地勾选改成未交。
-- 同步增量更新，重复导入去重，任务延期保留本地完成标记。
-- 分别展示各查询最近尝试、最近完整成功、失败原因；失败保留已有数据。
-- JSON 文件导入、ICS 日历导出（UTF-8 折行、UTC 时间，适用于 Outlook / Apple / Google 日历导入）。
-
-## 数据规则与限制
-
-所有无时区时间均按北京时间（Asia/Shanghai，UTC+8）解释。未知 / 无截止日期保留为空。带稳定 `external_id` 的任务改名、延期都会更新同一记录；没有 ID 的学习通列表使用课程、标题与开始时间生成标识，重名任务或考试改期开考时间可能需要人工确认。
-
-同步采用增量合并，**不会因为任务暂时没有返回就自动删除或推断已完成**。学习通待交作业在提交后可能从上游列表消失，需要在本机标记完成；停课 / 调课后旧课程也可能需要人工核对。第一版不是平台全量镜像。
-
-应用只有本机 HTTP 服务：监听 `127.0.0.1`，校验 Host，修改请求需要页面会话令牌；没有云端账号或公网访问。界面登录密码通过本机请求进入后台，再通过子进程 stdin 传入，不写入命令参数、日志或接口状态。可选的密码持久化使用 Windows DPAPI。数据库存于 `data/planner.sqlite3`。`.deps/`、`data/`、`config.local.json` 均被 Git 忽略。登录态仅供当前使用者，勿上传这些文件。
-
-「导出日历」下载的 ICS 是文件快照；「手机日历订阅」提供持续更新的局域网 ICS 链接。作业与考试在实际截止日期的前一天显示为单日全天日程，详情保留真实截止时间；课程仍按上课起止时间显示。未实现操作系统推送通知，提醒目前体现在看板数字、排序和颜色中。
-
-## 验证与开发
-
-```powershell
-python -m unittest discover -s tests -v
-node --check web/app.js
-```
-
-测试覆盖统一时间、跨平台去重、延期更新、本地完成标记、失败缓存、ICS 以及 HTTP 增删改导出流程。**本次没有真实账号，未实测平台登录与在线数据同步；连接器须在你完成登录后联调。**
-
-项目结构：
-
-```text
-src/                         桌面主线（C++20）
-  core/                      事件模型、存储、排布
-  api/                       平台同步、教务课表解析、桌面连接器
-  ui/                        窗口、三视图渲染、液态玻璃、书签脚本
-third_party/nlohmann/        单头 JSON 库
-tools/                       书签脚本源码与生成器
-build/better_planner.exe     桌面可执行文件（构建产物，不入库）
-app/core.py                  数据模型、SQLite、日历导出（网页版/同步后端）
-app/connectors.py            子进程协议、平台同步与失败隔离
-app/server.py                本机 HTTP API 与定时同步
-app/desktop_service.py       桌面版本机同步服务
-scripts/zhs_readonly.py      智慧树只读查询桥接
-scripts/zhs_ai_readonly.py   智慧树 AI 知识图谱只读查询
-scripts/install-connectors.ps1  安装独立连接器环境
-web/                         看板界面，无构建依赖
-tests/                       自动测试，不访问真实平台
-```
-
-
-### 手机日历订阅（一加 / ColorOS）
-
-启动后，点击「手机日历订阅」，复制地址到手机日历的「URL 导入」。手机和电脑连接同一 Wi-Fi；电脑保持运行课期。默认 TCP 8768 只提供带随机密钥的只读日历，管理页面 8765 仍仅允许本机访问。密钥保存在 data/calendar-subscription.key，重启后保持不变；可在界面重置以撤销旧链接。
-
-手机先用浏览器打开链接验证能下载 ICS。若无法访问，在便携包中双击 Enable-Calendar-LAN.bat 并确认管理员提示；规则只允许当前便携 Python 的 TCP 8768、来源为本地子网，不更改系统网络类别。学校 Wi-Fi 设备隔离、VPN 或地址变化也可能影响访问。局域网链接不是公网链接，外出时不会更新；HTTP 链接只应在可信局域网使用。此版本未提供公网托管、HTTPS 或 CalDAV。
-
-订阅与导出包含已同步、未完成且有时间的课程、作业与考试。修改截止日期后使用同一 UID 返回最新日程；手机是否及时更新及如何处理被移除的已完成任务，取决于日历客户端。没有配置日历闹钟。更远周次的课程需要先同步后才会出现在日历中。
-
-
-HTTPS 兼容性测试：如果手机浏览器能下载 ICS，但一加日历的「URL 导入」仍报网络不稳定，可在订阅窗口启用 HTTPS 临时链接。此功能使用官方 cloudflared，将 TCP 8768 的只读日历转发到 trycloudflare.com；不转发登录和管理页面。无需 Cloudflare 账号。临时地址在通道重建后变化，手机需重新添加，因此只作为兼容性测试与临时使用；长期自动更新需要固定域名的正式通道。电脑仍需运行课期，转发服务会处理日历请求。窗口可关闭通道或重置密钥使旧链接失效。
-
-日历任务展示：按北京时间计算截止日期，作业、考试及其他任务仅在该日期的前一天显示为一个全天日程（DTEND 为不包含的次日），标题为「明日截止」。网页截止清单保留实际截止时间。

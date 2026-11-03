@@ -30,7 +30,7 @@ def build():
         shutil.copytree(ROOT / folder, target / folder, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     scripts = target / "scripts"
     scripts.mkdir(exist_ok=True)
-    for name in ("auth_worker.py", "xxt_readonly.py", "zhs_readonly.py", "enable_calendar_lan.ps1"):
+    for name in ("auth_worker.py", "xxt_readonly.py", "zhs_readonly.py", "zhs_ai_readonly.py", "enable_calendar_lan.ps1"):
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
     shutil.copy2(ROOT / "launch.py", target / "launch.py")
     relay = DEPS / 'cloudflared'
@@ -82,6 +82,7 @@ def build():
         "zhs: pjm314159, GPL-3.0-only; corresponding source and license in sources/zhs.zip\n"
         "Python distributions: see runtime/site-packages/*.dist-info, including license metadata.\n"
         "cloudflared: Cloudflare, Apache-2.0; see tools/cloudflared-LICENSE.txt and cloudflared-manifest.json.\n"
+        "nlohmann/json 3.12.0: Nlohmann, MIT; single-header, vendored at third_party/nlohmann/json.hpp (native UI build only, not shipped in this bundle).\n"
         "No third-party source has been modified by this bundle; platform adapters run in separate processes.\n",
         encoding="utf-8")
     manifest = dict(app="Keqi", version="0.3.1", platform="Windows x64", python="3.14.0",
