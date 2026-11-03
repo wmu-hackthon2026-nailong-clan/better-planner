@@ -6,6 +6,22 @@
 
 当前是 Python + 浏览器的本地应用，尚未迁移到 WPF / WinUI。开发检查、提交范围和后续任务见 [CONTRIBUTING.md](CONTRIBUTING.md)。离线测试通过不代表平台在线接口已验证。
 
+## 桌面版功能
+
+桌面主线是 Windows 原生应用 `build/better_planner.exe`（C++20 + Win32 + Direct2D/DirectWrite），无 Electron、无浏览器内核，体积小、启动快。
+
+- **日 / 周 / 月三视图**：日视图为 7:00–23:00 时间轴；周视图七列时间网格，相同时间合并、交叉错位；月视图完整月份网格（每格最多 3 条摘要，其余显示“还有 N 项”）。
+- **今日概览**：右侧列出当天安排与截止事项，点击可看详情。
+- **今天 + 前后导航**：一键回今天、按日/周/月前后翻页。
+- **连接与同步**：工具栏“连接与同步”打开本机账号页，学习通账号密码登录、智慧树扫码登录；同步后日程自动回填，弹窗展示本次明细（置顶）。
+- **导入课表**：导入教务系统导出的课表 JSON（含段级单双周解析）；内置“抓课表”书签脚本，一键复制后到浏览器课表页点击即可下载 JSON。
+- **导出长图**：一键把日/周视图导出为 PNG 长图。
+- **液态玻璃**：侧栏开关，磨砂玻璃材质，关闭时纯色回退。
+
+命令行：`--demo` 载入演示数据；`--week`/`--month` 指定初始视图；`--no-glass` 关闭玻璃；`--export <路径>` / `--export-week <路径>` 直接导出 PNG。
+
+未实现（后续）：桌面内新增 / 编辑 / 删除事件、操作提醒推送。当前新增仍走网页版接口或手动补录。
+
 ## 给普通使用者：便携版，无需 Git / Python
 
 将 `dist/Keqi-Windows-x64.zip` 发给使用者，**解压整个文件夹后双击 `Start-Keqi.bat`**。程序自带官方 Python 运行环境和两个连接器，自动打开浏览器；运行期间保留命令窗口。
@@ -124,10 +140,19 @@ node --check web/app.js
 项目结构：
 
 ```text
-app/core.py                  数据模型、SQLite、日历导出
+src/                         桌面主线（C++20）
+  core/                      事件模型、存储、排布
+  api/                       平台同步、教务课表解析、桌面连接器
+  ui/                        窗口、三视图渲染、液态玻璃、书签脚本
+third_party/nlohmann/        单头 JSON 库
+tools/                       书签脚本源码与生成器
+build/better_planner.exe     桌面可执行文件（构建产物，不入库）
+app/core.py                  数据模型、SQLite、日历导出（网页版/同步后端）
 app/connectors.py            子进程协议、平台同步与失败隔离
 app/server.py                本机 HTTP API 与定时同步
+app/desktop_service.py       桌面版本机同步服务
 scripts/zhs_readonly.py      智慧树只读查询桥接
+scripts/zhs_ai_readonly.py   智慧树 AI 知识图谱只读查询
 scripts/install-connectors.ps1  安装独立连接器环境
 web/                         看板界面，无构建依赖
 tests/                       自动测试，不访问真实平台
