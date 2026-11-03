@@ -22,6 +22,22 @@
 
 未实现（后续）：桌面内新增 / 编辑 / 删除事件、操作提醒推送。当前新增仍走网页版接口或手动补录。
 
+### 打包与分发
+
+桌面版 exe **不进 git**（`build/`、`dist/` 已忽略），通过打包脚本产出便携 zip 分发给使用者：
+
+```powershell
+# 1. 编译桌面版（需 MSVC + vcvars64，见 scripts/build.ps1）
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
+
+# 2. 打包（自动带上 exe、VC++ 运行库、嵌入式 Python 与连接器）
+.\runtime\python.exe scripts\build_desktop_portable.py
+```
+
+产物为 `dist/Keqi-Desktop-Windows-x64.zip`（含 `better_planner.exe`、MSVC 运行库 DLL、`runtime/`、`app/`、`scripts/`）。使用者解压整个文件夹后双击 `Start-Keqi.bat` 即可运行，无需装 Git/Python/编译器。
+
+> 注意区分：`build_desktop_portable.py` 打包的是 **C++ 桌面版**；`build_portable.py` 打包的是旧 **Python 网页版**（产出 `Keqi-Windows-x64.zip`）。
+
 ## 给普通使用者：便携版，无需 Git / Python
 
 将 `dist/Keqi-Windows-x64.zip` 发给使用者，**解压整个文件夹后双击 `Start-Keqi.bat`**。程序自带官方 Python 运行环境和两个连接器，自动打开浏览器；运行期间保留命令窗口。
