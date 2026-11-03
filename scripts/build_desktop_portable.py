@@ -59,6 +59,15 @@ def stage_config(target: Path) -> None:
         "zhs_python": str(py),
         "sync_interval_minutes": 30,
     }
+    # 沿用开发者本地已配置的学期开始日期（课表周次按学期第 1 周展开）。
+    local_cfg = ROOT / "config.local.json"
+    if local_cfg.exists():
+        try:
+            local = json.loads(local_cfg.read_text(encoding="utf-8-sig"))
+            if "semester_start" in local:
+                cfg["semester_start"] = local["semester_start"]
+        except (json.JSONDecodeError, OSError):
+            pass
     (target / "config.local.json").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 

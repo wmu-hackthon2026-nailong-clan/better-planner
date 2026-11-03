@@ -4,5 +4,6 @@
   "zhs_python": "<项目根目录>\\.deps\\zhs-env\\Scripts\\python.exe",
   "auth_python": null,
   "desktop_python": "<项目根目录>\\runtime\\python.exe",
-  "sync_interval_minutes": 30
+  "sync_interval_minutes": 30,
+  "semester_start": "2026-09-07"
 }

@@ -1,8 +1,12 @@
 #include "api/timetable.hpp"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <cctype>
 #include <ctime>
+#include <fstream>
+#include <iomanip>
 #include <sstream>
 
 namespace bp::api {
@@ -288,6 +292,56 @@ std::int64_t nearestMonday() {
     return today - back * 86400;
 }
 
+// 从 exe 所在目录的 config.local.json 读取 "semester_start"（YYYY-MM-DD，
+// 学期第一周周一），解析为本地 0 点 epoch 秒；缺失或非法返回 0。
+std::int64_t configSemesterStart() {
+    char buffer[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+    std::string dir(buffer);
+    const std::size_t slash = dir.find_last_of("\\/");
+    if (slash != std::string::npos) {
+        dir = dir.substr(0, slash + 1);
+    }
+    // exe 可能在 build/ 子目录，向上找项目根。
+    for (int i = 0; i < 3; ++i) {
+        const std::string cfg = dir + "config.local.json";
+        std::ifstream file(cfg, std::ios::binary);
+        if (file) {
+            std::ostringstream ss;
+            ss << file.rdbuf();
+            const std::string text = ss.str();
+            const std::string needle = "\"semester_start\"";
+            const std::size_t pos = text.find(needle);
+            if (pos != std::string::npos) {
+                const std::size_t colon = text.find(':', pos + needle.size());
+                if (colon != std::string::npos) {
+                    const std::size_t q1 = text.find('"', colon + 1);
+                    const std::size_t q2 =
+                        q1 == std::string::npos ? std::string::npos
+                                                 : text.find('"', q1 + 1);
+                    if (q1 != std::string::npos && q2 != std::string::npos) {
+                        const std::string date = text.substr(q1 + 1, q2 - q1 - 1);
+                        std::tm tm{};
+                        std::istringstream is(date);
+                        is >> std::get_time(&tm, "%Y-%m-%d");
+                        if (!is.fail() && tm.tm_year > 0) {
+                            return static_cast<std::int64_t>(_mktime64(&tm));
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        dir = dir.substr(0, dir.size() - 1);
+        const std::size_t p = dir.find_last_of("\\/");
+        if (p == std::string::npos) {
+            break;
+        }
+        dir = dir.substr(0, p + 1);
+    }
+    return 0;
+}
+
 }  // namespace
 
 TimetableResult parseTimetable(const std::string& text,
@@ -335,7 +389,12 @@ TimetableResult parseTimetable(const std::string& text,
     }
 
     if (semesterStart == 0) {
-        semesterStart = nearestMonday();
+        // 优先从 config.local.json 的 semester_start 读取学期第一周周一；
+        // 未配置时回退到当前周周一（此时周次可能整体错位，需用户配置）。
+        semesterStart = configSemesterStart();
+        if (semesterStart == 0) {
+            semesterStart = nearestMonday();
+        }
     }
 
     for (const std::string& row : rows) {
