@@ -30,7 +30,7 @@ def build():
         shutil.copytree(ROOT / folder, target / folder, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     scripts = target / "scripts"
     scripts.mkdir(exist_ok=True)
-    for name in ("auth_worker.py", "xxt_readonly.py", "zhs_readonly.py", "enable_calendar_lan.ps1"):
+    for name in ("auth_worker.py", "xxt_readonly.py", "zhs_readonly.py", "zhs_ai_readonly.py", "enable_calendar_lan.ps1"):
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
     shutil.copy2(ROOT / "launch.py", target / "launch.py")
     relay = DEPS / 'cloudflared'
