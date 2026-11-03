@@ -14,6 +14,9 @@ public:
     // 每次绘制前绑定目标，尺寸或设备变化会清理位图缓存；鼠标坐标为窗口 DIP。
     void begin(ID2D1RenderTarget* target, float mouseX, float mouseY, bool enabled);
     void background(ID2D1RenderTarget* target);
+    // Animate small controls; layout and hit targets remain stable.
+    D2D1_RECT_F control(D2D1_RECT_F rect);
+    bool animating() const;
     // 支持平移变换；tint 决定底色，radius 为圆角半径。
     void draw(ID2D1RenderTarget* target, D2D1_RECT_F rect, D2D1_COLOR_F tint, float radius);
     void reset();

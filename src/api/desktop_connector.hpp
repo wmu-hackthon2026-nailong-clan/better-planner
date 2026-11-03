@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/store.hpp"
 
@@ -24,6 +25,9 @@ public:
     void requestOpen();
     std::wstring takeOpenUrl();
     std::wstring status() const;
+    // 取走最近一次平台同步载入的事件快照（仅当次同步；取后清空）。
+    // 返回空表示自上次取走后没有新的同步结果，用于 UI 弹窗展示同步明细。
+    std::vector<Event> takeSyncSnapshot();
     // 关闭窗口前调用，确保后台不再向已销毁窗口投递消息。
     void stop();
 

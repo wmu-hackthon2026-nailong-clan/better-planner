@@ -298,6 +298,40 @@ void testParseTimetableBasic() {
     check(foundPhysics, "timetable: physics present");
 }
 
+void testParseTimetableRealShape() {
+    // 复现正方教务系统真实导出的 kbList 字段形态：
+    //   xqj 是字符串 "1"（不是数字），jcor/jcs 是字符串 "1-2"/"8-10"，
+    //   没有 length 字段。此前两个 bug 分别导致 weekday 解析为 0 而整行
+    //   被跳过、以及连堂（如 8-10 节）被当成 1 节。
+    const std::string json =
+        "{\"kbList\":["
+        // 生物化学：周一 1-2 节，1-4周,6周 → 5 次。
+        "{\"kcmc\":\"生物化学\",\"xqj\":\"1\",\"zcd\":\"1-4周,6周\","
+        "\"cdmc\":\"7AJ302\",\"xm\":\"邹立林\",\"jcs\":\"1-2\"},"
+        // 卫生统计学：周一 8-10 节（连堂 3 节），1周,12-13周 → 3 次。
+        "{\"kcmc\":\"卫生统计学1\",\"xqj\":\"1\",\"zcd\":\"1周,12-13周\","
+        "\"cdmc\":\"7AJ302\",\"xm\":\"毛广运\",\"jcs\":\"8-10\"},"
+        // 社会医学：周二 1-2 节，1周,4-6周(双),7-13周 → 1+2+7=10 次。
+        "{\"kcmc\":\"社会医学与行为科学（双语）\",\"xqj\":\"2\","
+        "\"zcd\":\"1周,4-6周(双),7-13周\",\"cdmc\":\"7AJ302\","
+        "\"xm\":\"宁博\",\"jcs\":\"1-2\"}"
+        "]}";
+    const auto result = bp::api::parseTimetable(json, 0);
+    check(!result.empty, "timetable real: parsed");
+    // 5 + 3 + 10 = 18 个事件。
+    check(result.events.size() == 18, "timetable real: 18 events");
+    int stats3 = 0;  // 卫生统计学（3 节连堂）
+    for (const auto& e : result.events) {
+        if (e.title == "卫生统计学1") {
+            ++stats3;
+            // 8-10 节应为 3 节 * 45 分钟 = 135 分钟。
+            check(e.end - e.start == 3 * 45 * 60,
+                  "timetable real: 3-section span");
+        }
+    }
+    check(stats3 == 3, "timetable real: stats has 3 weeks");
+}
+
 void testParseTimetableEmpty() {
     // 纯外壳 HTML（无 kbList、无数据）应返回 empty 且无事件。
     const std::string html =
@@ -398,6 +432,8 @@ int main() {
     std::cout << "ok inverted" << std::endl;
     testParseTimetableBasic();
     std::cout << "ok timetable basic" << std::endl;
+    testParseTimetableRealShape();
+    std::cout << "ok timetable real shape" << std::endl;
     testParseTimetableEmpty();
     std::cout << "ok timetable empty" << std::endl;
     if (g_failures != 0) {

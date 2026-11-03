@@ -74,6 +74,11 @@ int getInt(const std::string& text, const std::string& key, int fallback) {
     if (cursor >= text.size()) {
         return fallback;
     }
+    // 值可能是数字（如 "xqj":1）也可能是字符串（如 "xqj":"1"），
+    // 字符串时跳过开头的引号再解析。
+    if (text[cursor] == '"') {
+        ++cursor;
+    }
     const char* begin = text.c_str() + cursor;
     char* endPtr = nullptr;
     const long value = std::strtol(begin, &endPtr, 10);
@@ -132,81 +137,105 @@ std::vector<std::string> getArray(const std::string& text,
 }
 
 // 解析周次描述："1-16周"、"1,3,5周"、"2-16周(双)"、"1-16周(单)" 等。
-// 返回生效周次列表（1-based）。空或无法解析返回空。
+// 单双周标记是「段级」修饰：紧跟某一段（如 "1周,4-6周(双),7-13周" 意为
+// 第 1 周、第 4/6 双周、第 7-13 周），而非作用于整串。返回生效周次列表
+// （1-based）。空或无法解析返回空。
 std::vector<int> parseWeeks(const std::string& raw) {
     std::vector<int> weeks;
     std::string s = trim(raw);
     if (s.empty()) {
         return weeks;
     }
-    // 去掉"周"字与括号内容说明，但记住单双周标记。
-    bool oddOnly = false;
-    bool evenOnly = false;
-    if (s.find("(单)") != std::string::npos || s.find("（单）") != std::string::npos) {
-        oddOnly = true;
-    }
-    if (s.find("(双)") != std::string::npos || s.find("（双）") != std::string::npos) {
-        evenOnly = true;
-    }
-    // 去掉括号及其中内容。
-    const std::size_t lp = s.find('(');
-    if (lp != std::string::npos) {
-        s = s.substr(0, lp);
-    }
-    const std::size_t lc = s.find("\xEF\xBC\x88");  // 全角（
-    if (lc != std::string::npos) {
-        s = s.substr(0, lc);
-    }
-    // 去掉"周"字。
-    std::string digits;
-    digits.reserve(s.size());
-    for (char ch : s) {
-        if (std::isdigit(static_cast<unsigned char>(ch)) || ch == ',' ||
-            ch == '-') {
-            digits.push_back(ch);
+    // 先把全角括号归一为半角。
+    std::string norm;
+    norm.reserve(s.size() * 2);
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        // 全角（ U+FF08 / 全角） U+FF09
+        if (c == 0xEF && i + 2 < s.size() &&
+            static_cast<unsigned char>(s[i + 1]) == 0xBC &&
+            static_cast<unsigned char>(s[i + 2]) == 0x88) {
+            norm.push_back('(');
+            i += 3;
+            continue;
         }
+        if (c == 0xEF && i + 2 < s.size() &&
+            static_cast<unsigned char>(s[i + 1]) == 0xBC &&
+            static_cast<unsigned char>(s[i + 2]) == 0x89) {
+            norm.push_back(')');
+            i += 3;
+            continue;
+        }
+        norm.push_back(s[i]);
+        ++i;
     }
-    if (digits.empty()) {
-        return weeks;
-    }
-    // 按逗号切段。
-    std::size_t start = 0;
-    while (start <= digits.size()) {
-        const std::size_t comma = digits.find(',', start);
-        const std::string seg =
-            digits.substr(start, comma == std::string::npos
-                                     ? std::string::npos
-                                     : comma - start);
-        if (!seg.empty()) {
-            const std::size_t dash = seg.find('-');
-            if (dash == std::string::npos) {
-                const int w = std::atoi(seg.c_str());
-                if (w > 0) {
-                    weeks.push_back(w);
-                }
-            } else {
-                const int from = std::atoi(seg.substr(0, dash).c_str());
-                const int to = std::atoi(seg.substr(dash + 1).c_str());
-                for (int w = from; w <= to && w <= 30; ++w) {
-                    weeks.push_back(w);
-                }
+
+    // 按逗号分段，逐段解析；每段可带段级 (单)/(双) 修饰。
+    auto appendSegment = [&weeks](const std::string& seg) {
+        if (seg.empty()) {
+            return;
+        }
+        // 剥离段级修饰。
+        std::string body = seg;
+        bool oddOnly = false;
+        bool evenOnly = false;
+        const std::size_t lp = body.find('(');
+        if (lp != std::string::npos) {
+            const std::string suffix = body.substr(lp);
+            if (suffix.find("\xE5\x8D\x95" /* 单 */) != std::string::npos) {
+                oddOnly = true;
+            }
+            if (suffix.find("\xE5\x8F\x8C" /* 双 */) != std::string::npos) {
+                evenOnly = true;
+            }
+            body = body.substr(0, lp);
+        }
+        // 提取数字与连字符。
+        std::string digits;
+        for (char ch : body) {
+            if (std::isdigit(static_cast<unsigned char>(ch)) || ch == '-') {
+                digits.push_back(ch);
             }
         }
+        if (digits.empty()) {
+            return;
+        }
+        std::vector<int> segWeeks;
+        const std::size_t dash = digits.find('-');
+        if (dash == std::string::npos) {
+            const int w = std::atoi(digits.c_str());
+            if (w > 0) {
+                segWeeks.push_back(w);
+            }
+        } else {
+            const int from = std::atoi(digits.substr(0, dash).c_str());
+            const int to = std::atoi(digits.substr(dash + 1).c_str());
+            for (int w = from; w <= to && w <= 30; ++w) {
+                segWeeks.push_back(w);
+            }
+        }
+        for (int w : segWeeks) {
+            const bool odd = (w % 2) == 1;
+            if (oddOnly && !odd) {
+                continue;
+            }
+            if (evenOnly && odd) {
+                continue;
+            }
+            weeks.push_back(w);
+        }
+    };
+
+    std::size_t start = 0;
+    while (start <= norm.size()) {
+        const std::size_t comma = norm.find(',', start);
+        appendSegment(norm.substr(
+            start, comma == std::string::npos ? std::string::npos
+                                              : comma - start));
         if (comma == std::string::npos) {
             break;
         }
         start = comma + 1;
-    }
-    // 应用单双周过滤。
-    if (oddOnly || evenOnly) {
-        std::vector<int> filtered;
-        for (int w : weeks) {
-            const bool odd = (w % 2) == 1;
-            if ((oddOnly && odd) || (evenOnly && !odd)) {
-                filtered.push_back(w);
-            }
-        }
-        weeks.swap(filtered);
     }
     return weeks;
 }
@@ -323,19 +352,35 @@ TimetableResult parseTimetable(const std::string& text,
         const std::string location = getString(row, "cdmc");
         const int weekday = getInt(row, "xqj", 0);
         const std::string zcd = getString(row, "zcd");
-        // 节次：优先 jcor/length，其次 jcs("1-2")。
-        int startSection = getInt(row, "jcor", 0);
-        int length = getInt(row, "length", 1);
+        // 节次：优先解析 jcs（"1-2" / "8-10" 字符串），这是正方教务系统
+        // 最可靠的课长来源；jcor 在真实数据里也是 "1-2" 字符串而非整数，
+        // length 字段通常不存在，故不能用 getInt 直接取。
+        int startSection = 0;
+        int length = 1;
+        const std::string jcs = getString(row, "jcs");
+        if (!jcs.empty()) {
+            const std::size_t dash = jcs.find('-');
+            const int a = std::atoi(jcs.substr(0, dash).c_str());
+            const int b = dash == std::string::npos
+                              ? a
+                              : std::atoi(jcs.substr(dash + 1).c_str());
+            startSection = a;
+            length = b - a + 1;
+        }
         if (startSection == 0) {
-            const std::string jcs = getString(row, "jcs");
-            if (!jcs.empty()) {
-                const std::size_t dash = jcs.find('-');
-                const int a = std::atoi(jcs.substr(0, dash).c_str());
+            // 兜底：尝试 jcor（可能为字符串 "1-2" 或整数 1）。
+            const std::string jcor = getString(row, "jcor");
+            if (!jcor.empty()) {
+                const std::size_t dash = jcor.find('-');
+                const int a = std::atoi(jcor.substr(0, dash).c_str());
                 const int b = dash == std::string::npos
                                   ? a
-                                  : std::atoi(jcs.substr(dash + 1).c_str());
+                                  : std::atoi(jcor.substr(dash + 1).c_str());
                 startSection = a;
                 length = b - a + 1;
+            } else {
+                startSection = getInt(row, "jcor", 0);
+                length = getInt(row, "length", 1);
             }
         }
 

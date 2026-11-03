@@ -1,3 +1,4 @@
+#define _WIN32_WINNT 0x0A00  // TaskDialog + DPI API（Win10）
 #include <windows.h>
 #include <windowsx.h>
 #include <d2d1.h>
@@ -7,6 +8,7 @@
 #include <commdlg.h>
 #include <wincodec.h>
 #include <shellapi.h>
+#include <commctrl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -29,11 +31,13 @@
 #include "core/queries.hpp"
 #include "core/store.hpp"
 #include "ui/liquid_glass.hpp"
+#include "ui/bookmarklet.inc"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "comctl32.lib")
 
 namespace {
 
@@ -93,6 +97,7 @@ float g_hoverX=-1, g_hoverY=-1;
 std::unique_ptr<bp::api::DesktopConnector> g_connector;
 bp::ui::LiquidGlass g_glass;
 bool g_glassEnabled = true;
+float WindowScale(HWND hwnd) { return GetDpiForWindow(hwnd)/96.0f; }
 
 struct SolidBrushes {
     ID2D1SolidColorBrush* text = nullptr;
@@ -242,7 +247,7 @@ void updateScrollRange(HWND hwnd) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
     const float viewH =
-        static_cast<float>(rc.bottom) - kTopBarH - kStatusBarH;
+        static_cast<float>(rc.bottom)/WindowScale(hwnd) - kTopBarH - kStatusBarH - 30;
     const int maxScroll =
         static_cast<int>(dayViewContentHeight() - viewH) > 0
             ? static_cast<int>(dayViewContentHeight() - viewH)
@@ -267,6 +272,67 @@ void DrawTextLine(ID2D1RenderTarget* t, const std::wstring& text,
                  DWRITE_MEASURING_MODE_NATURAL);
 }
 
+// 绘制单行文字，超出宽度自动截断并追加省略号。
+void DrawTextEllipsis(ID2D1RenderTarget* t, const std::wstring& text,
+                      const D2D1_RECT_F& rect, IDWriteTextFormat* format,
+                      ID2D1Brush* brush) {
+    if (text.empty()) return;
+    const float width = rect.right - rect.left;
+    if (width <= 0.0f) return;
+    // 仅按宽度判断是否溢出（单行文本，高度交给裁剪处理）。
+    IDWriteTextLayout* layout = nullptr;
+    if (FAILED(g_dwrite->CreateTextLayout(
+            text.c_str(), static_cast<UINT32>(text.size()), format, width,
+            rect.bottom - rect.top, &layout))) {
+        DrawTextLine(t, text, rect, format, brush);
+        return;
+    }
+    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    DWRITE_TEXT_METRICS metrics{};
+    layout->GetMetrics(&metrics);
+    if (metrics.widthIncludingTrailingWhitespace <= width) {
+        t->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), layout, brush,
+                          D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        layout->Release();
+        return;
+    }
+    // 逐字符截断直到加省略号后能放下。
+    std::wstring clipped = text;
+    std::wstring withEllipsis;
+    const std::wstring ell = L"…";
+    while (!clipped.empty()) {
+        withEllipsis = clipped + ell;
+        IDWriteTextLayout* probe = nullptr;
+        if (SUCCEEDED(g_dwrite->CreateTextLayout(
+                withEllipsis.c_str(), static_cast<UINT32>(withEllipsis.size()),
+                format, width, rect.bottom - rect.top, &probe))) {
+            probe->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            DWRITE_TEXT_METRICS m{};
+            probe->GetMetrics(&m);
+            const bool fits = m.widthIncludingTrailingWhitespace <= width;
+            probe->Release();
+            if (fits) break;
+        }
+        clipped.pop_back();
+    }
+    IDWriteTextLayout* out = nullptr;
+    if (SUCCEEDED(g_dwrite->CreateTextLayout(
+            withEllipsis.c_str(), static_cast<UINT32>(withEllipsis.size()),
+            format, width, rect.bottom - rect.top, &out))) {
+        out->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        t->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), out, brush,
+                          D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        out->Release();
+    }
+}
+
+void FillSurface(ID2D1RenderTarget* t,D2D1_RECT_F r,D2D1_COLOR_F color,float radius=12) {
+    ID2D1SolidColorBrush* brush=nullptr;
+    if(SUCCEEDED(t->CreateSolidColorBrush(color,&brush))) {
+        t->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);
+        brush->Release();
+    }
+}
 void FillPanel(ID2D1RenderTarget* t,D2D1_RECT_F r,D2D1_COLOR_F color,float radius=12) {
     if(radius>=8 || radius==0) {
         g_glass.draw(t,r,color,radius);
@@ -279,7 +345,7 @@ void FillPanel(ID2D1RenderTarget* t,D2D1_RECT_F r,D2D1_COLOR_F color,float radiu
     }
 }
 void DrawEventBlock(ID2D1RenderTarget* t,const D2D1_RECT_F& r,const D2D1_COLOR_F& a) {
-    g_glass.draw(t,r,Clr(.70f+.30f*a.r,.70f+.30f*a.g,.70f+.30f*a.b),12);
+    FillSurface(t,r,Clr(.90f+.10f*a.r,.90f+.10f*a.g,.90f+.10f*a.b),10);
     FillPanel(t,D2D1::RectF(r.left+3,r.top+9,r.left+6,r.bottom-9),a,2);
 }
 
@@ -421,26 +487,32 @@ void DrawChip(ID2D1RenderTarget* t, const SolidBrushes& sb,
               const D2D1_RECT_F& rect, const std::wstring& label,
               bool active) {
     bool hover=g_hoverX>=rect.left && g_hoverX<=rect.right && g_hoverY>=rect.top && g_hoverY<=rect.bottom;
-    FillPanel(t,rect,active?Clr(0.88f,0.90f,1.0f):(hover?Clr(0.90f,0.92f,0.97f):Clr(0.96f,0.97f,0.99f)),8);
+    const auto visual=g_glass.control(rect);
+    const bool navigation=rect.right<200 && rect.top<300;
+    if(active || hover || !navigation)
+        FillPanel(t,visual,Clr(.95f,.98f,1),(visual.bottom-visual.top)*.5f);
+    if(active) {
+        FillSurface(t,D2D1::RectF(visual.left+12,visual.top+15,visual.left+18,visual.top+21),Clr(.08f,.35f,.47f),3);
+    }
     DrawTextLine(t,label,rect,g_fmtBtn,active?sb.text:sb.dim);
 }
 
 constexpr float kSidebar=200;
 void RenderTopBar(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F& size) {
-    FillPanel(t,D2D1::RectF(kSidebar+16,14,size.width-16,kTopBarH-6),Clr(1,1,1),18);
-    FillPanel(t,D2D1::RectF(0,0,kSidebar,size.height),Clr(0.96f,0.97f,0.99f),0);
-    FillPanel(t,D2D1::RectF(22,24,54,56),Clr(0.36f,0.39f,0.84f),10);
+    FillPanel(t,D2D1::RectF(kSidebar+16,14,size.width-16,kTopBarH-6),Clr(1,1,1),28);
+    FillPanel(t,D2D1::RectF(10,14,kSidebar-8,size.height-16),Clr(.95f,.98f,1),28);
+    FillSurface(t,D2D1::RectF(24,30,56,62),Clr(.08f,.30f,.39f),10);
     ID2D1SolidColorBrush* white=nullptr;
     t->CreateSolidColorBrush(Clr(1,1,1),&white);
-    DrawTextLine(t,L"B",D2D1::RectF(22,24,54,56),g_fmtBtn,white);
+    DrawTextLine(t,L"B",D2D1::RectF(24,30,56,62),g_fmtBtn,white);
     white->Release();
-    DrawTextLine(t,L"Better Planner",D2D1::RectF(64,27,195,50),g_fmtApp,sb.text);
+    DrawTextLine(t,L"Better Planner",D2D1::RectF(64,33,190,56),g_fmtApp,sb.text);
     DrawTextLine(t,L"让每一天，井然有序",D2D1::RectF(22,70,190,92),g_fmtTime,sb.faint);
     DrawTextLine(t,L"我的日历",D2D1::RectF(22,122,180,144),g_fmtTime,sb.faint);
     const wchar_t* names[]={L"日视图",L"周视图",L"月视图"};
     const Btn ids[]={Btn::ViewDay,Btn::ViewWeek,Btn::ViewMonth};
     for(int i=0;i<3;++i) {
-        auto r=D2D1::RectF(16,154+i*46.0f,184,194+i*46.0f);
+        auto r=D2D1::RectF(22,154+i*46.0f,180,194+i*46.0f);
         DrawChip(t,sb,r,names[i],static_cast<int>(g_view)==i);
         g_ui.push_back({r,ids[i]});
     }
@@ -467,16 +539,15 @@ void RenderTopBar(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F&
     add(D2D1::RectF(size.width-178,72,size.width-118,100),L"今天",Btn::Today);
     add(D2D1::RectF(size.width-106,72,size.width-72,100),L"‹",Btn::NavPrev);
     add(D2D1::RectF(size.width-64,72,size.width-30,100),L"›",Btn::NavNext);
-    t->DrawLine(D2D1::Point2F(kSidebar,kTopBarH),D2D1::Point2F(size.width,kTopBarH),sb.line);
 }
 void RenderStatusBar(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F& size) {
-    FillPanel(t,D2D1::RectF(kSidebar,size.height-kStatusBarH,size.width,size.height),Clr(1,1,1),0);
+    FillSurface(t,D2D1::RectF(kSidebar+16,size.height-kStatusBarH,size.width-16,size.height-3),Clr(1,1,1,.72f),10);
     DrawTextLine(t,g_connector ? g_connector->status() : L"点击连接与同步，登录平台并导入课表",
         D2D1::RectF(kSidebar+24,size.height-24,size.width-30,size.height-4),g_fmtTime,sb.faint);
 }
 void RenderAgenda(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F& size) {
     float x=size.width-264;
-    FillPanel(t,D2D1::RectF(x,kTopBarH+20,size.width-20,size.height-50),Clr(0.97f,0.98f,1),16);
+    FillPanel(t,D2D1::RectF(x,kTopBarH+20,size.width-20,size.height-50),Clr(0.97f,0.98f,1),28);
     DrawTextLine(t,L"当日概览",D2D1::RectF(x+20,144,size.width-34,171),g_fmtTitle,sb.text);
     auto events=bp::api::Registry::instance().store()->range(g_dayBase,g_dayBase+kDaySeconds);
     std::sort(events.begin(),events.end(),[](const auto& a,const auto& b){return a.start<b.start;});
@@ -484,7 +555,7 @@ void RenderAgenda(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F&
     float y=220;
     for(const auto& e:events) {
         if(y+78>size.height-70)break;
-        FillPanel(t,D2D1::RectF(x+14,y,size.width-34,y+70),Clr(1,1,1),10);
+        FillSurface(t,D2D1::RectF(x+14,y,size.width-34,y+70),Clr(1,1,1,.55f),12);
         FillPanel(t,D2D1::RectF(x+25,y+16,x+31,y+22),AccentOf(e),3);
         DrawTextLine(t,toWide(e.title),D2D1::RectF(x+42,y+10,size.width-44,y+33),g_fmtTitle,sb.text);
         DrawTextLine(t,spanText(e),D2D1::RectF(x+42,y+39,size.width-44,y+58),g_fmtTime,sb.dim);
@@ -496,11 +567,17 @@ void RenderAgenda(ID2D1RenderTarget* t,const SolidBrushes& sb,const D2D1_SIZE_F&
 
 void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
                     const D2D1_SIZE_F& size) {
+    // 左侧时间刻度列，与日视图风格统一。
+    // 时间轴仅展示 7:00–23:00（16 小时），课程/日程集中时段更清晰。
+    const float axisW = 48.0f;
     const float headH = 52.0f;
     const float y0 = kTopBarH + headH;
-    const float colW = (size.width - 28.0f) / 7.0f;
+    const int dayStartHour = 7;
+    const int daySpanHours = 16;
+    const float innerW = size.width - axisW - 8.0f;
+    const float colW = innerW / 7.0f;
     const float bodyH = size.height - kStatusBarH - y0;
-    const float pxPerHour = bodyH / 24.0f;  // 24 小时铺满整列高度
+    const float pxPerHour = bodyH / static_cast<float>(daySpanHours);
     const std::int64_t today = TodayBase();
     const wchar_t* kWeek[] = {L"周一", L"周二", L"周三", L"周四",
                               L"周五", L"周六", L"周日"};
@@ -510,12 +587,38 @@ void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
         registry.store()->range(g_weekBase, g_weekBase + 7 * kDaySeconds);
     const auto grouped = bp::groupByDay(all, g_weekBase, kDaySeconds);
 
-    // 顶部：日期 + 星期，今天高亮圆点。
+    // 把"当日秒数"映射为 y 坐标（相对 7:00 起）。
+    const auto secToY = [&](std::int64_t daySec) {
+        const float hoursFromStart =
+            static_cast<float>(daySec) / 3600.0f -
+            static_cast<float>(dayStartHour);
+        return y0 + 4.0f + hoursFromStart * pxPerHour;
+    };
+
+    // 左侧时间刻度：每小时一条线，偶数小时标文字。
+    for (int h = dayStartHour; h <= dayStartHour + daySpanHours; ++h) {
+        const float yy = secToY(h * 3600);
+        const bool major = (h % 2 == 0);
+        t->DrawLine(D2D1::Point2F(axisW - (major ? 10.0f : 6.0f), yy),
+                    D2D1::Point2F(axisW, yy),
+                    major ? sb.lineStrong : sb.line, 1.0f);
+        if (major) {
+            wchar_t buf[8];
+            swprintf(buf, 8, L"%02d:00", h);
+            DrawTextLine(t, buf,
+                         D2D1::RectF(2.0f, yy - 8.0f, axisW - 14.0f, yy + 8.0f),
+                         g_fmtAxis, sb.faint);
+        }
+    }
+
+    // 顶部日期标题 + 今天高亮。
     for (int d = 0; d < 7; ++d) {
-        const float cx = 14.0f + d * colW;
+        const float cx = axisW + d * colW;
         const std::int64_t dayBase = g_weekBase + d * kDaySeconds;
         const bool isToday = dayBase == today;
         const std::tm lt = localTm(dayBase);
+        wchar_t dayNum[8];
+        swprintf(dayNum, 8, L"%d", lt.tm_mday);
         if (isToday) {
             ID2D1SolidColorBrush* pill = nullptr;
             t->CreateSolidColorBrush(Clr(0.36f, 0.55f, 0.95f), &pill);
@@ -527,8 +630,6 @@ void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
                 pill);
             pill->Release();
         }
-        wchar_t dayNum[8];
-        swprintf(dayNum, 8, L"%d", lt.tm_mday);
         std::wstring head = std::wstring(kWeek[d]) + L" " + dayNum;
         DrawTextLine(t, head,
                      D2D1::RectF(cx, kTopBarH + 10.0f, cx + colW,
@@ -536,22 +637,7 @@ void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
                      g_fmtWeekHead,
                      isToday ? (ID2D1Brush*)sb.text : (ID2D1Brush*)sb.dim);
 
-        // 列背景分隔线
-        t->DrawLine(D2D1::Point2F(cx, y0), D2D1::Point2F(cx, y0 + bodyH),
-                    sb.line, 1.0f);
-        // 整点淡横线（每 4 小时一条，避免过密）
-        for (int h = 0; h <= 24; h += 4) {
-            const float yy = y0 + static_cast<float>(h) * pxPerHour;
-            t->DrawLine(D2D1::Point2F(cx, yy), D2D1::Point2F(cx + colW, yy),
-                        sb.line, 0.5f);
-        }
-    }
-
-    // 每列按时间轴排布事件（重叠则用泳道右移，复用 LayoutEngine）。
-    for (int d = 0; d < 7; ++d) {
-        const float cx = 14.0f + d * colW;
-        const std::int64_t dayBase = g_weekBase + d * kDaySeconds;
-        const bool isToday = dayBase == today;
+        // 列背景：今天用淡蓝铺底，其余淡色分隔。
         if (isToday) {
             ID2D1SolidColorBrush* hl = nullptr;
             t->CreateSolidColorBrush(Clr(0.36f, 0.55f, 0.95f, 0.05f), &hl);
@@ -563,9 +649,24 @@ void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
                 hl);
             hl->Release();
         }
+        // 列分隔竖线。
+        t->DrawLine(D2D1::Point2F(cx + colW - 0.5f, y0),
+                    D2D1::Point2F(cx + colW - 0.5f, y0 + bodyH), sb.line, 1.0f);
+        // 偶数小时淡横线。
+        for (int h = dayStartHour; h <= dayStartHour + daySpanHours; h += 2) {
+            const float yy = secToY(h * 3600);
+            t->DrawLine(D2D1::Point2F(cx, yy), D2D1::Point2F(cx + colW, yy),
+                        sb.line, 0.5f);
+        }
+
         g_dayHits.push_back(DayHit{
             D2D1::RectF(cx, kTopBarH, cx + colW, y0 + bodyH), dayBase});
+    }
 
+    // 每列按时间轴排布事件，重叠用泳道右移。
+    for (int d = 0; d < 7; ++d) {
+        const float cx = axisW + d * colW;
+        const std::int64_t dayBase = g_weekBase + d * kDaySeconds;
         auto it = grouped.find(dayBase);
         if (it == grouped.end()) continue;
         const auto blocks = registry.layoutEngine()->layout(it->second);
@@ -573,26 +674,27 @@ void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
         for (const auto& block : blocks) {
             if (block.eventIndices.empty()) continue;
             const auto& e = it->second[block.eventIndices.front()];
-            const std::int64_t startSec =
+            std::int64_t startSec =
                 (std::max)(e.start - dayBase, (std::int64_t)0);
             std::int64_t endSec = e.end - dayBase;
             if (e.kind == bp::Kind::Deadline) endSec = startSec;
-            const float durHours =
-                (std::max)(static_cast<float>(endSec - startSec) / 3600.0f,
-                           0.5f);
+            // 裁剪到可视时间窗（7:00–23:00）。
+            const std::int64_t winStart = dayStartHour * 3600;
+            const std::int64_t winEnd = (dayStartHour + daySpanHours) * 3600;
+            startSec = (std::max)(startSec, winStart);
+            endSec = (std::min)((std::max)(endSec, startSec + 30 * 60), winEnd);
             const float laneShift =
-                (std::min)(static_cast<float>(block.lane) * (colW * 0.22f),
-                           colW * 0.45f);
+                (std::min)(static_cast<float>(block.lane) * (colW * 0.16f),
+                           colW * 0.34f);
 
-            const float blockTop = y0 + 4.0f +
-                                   static_cast<float>(startSec) / 3600.0f *
-                                       pxPerHour;
-            const float blockH = durHours * pxPerHour;
-            if (blockTop + blockH > y0 + bodyH) continue;
+            const float blockTop = secToY(startSec);
+            const float blockBottom = secToY(endSec);
+            const float blockH = blockBottom - blockTop;
+            if (blockH < 22.0f || blockTop + blockH > y0 + bodyH) continue;
 
             const D2D1_RECT_F r =
-                D2D1::RectF(cx + 4.0f + laneShift, blockTop,
-                            cx + colW - 4.0f, blockTop + blockH);
+                D2D1::RectF(cx + 3.0f + laneShift, blockTop,
+                            cx + colW - 3.0f, blockBottom);
             const D2D1_COLOR_F accent = AccentOf(e);
             DrawEventBlock(t, r, accent);
             if (block.lane > 0) {
@@ -607,33 +709,60 @@ void RenderWeekView(ID2D1RenderTarget* t, const SolidBrushes& sb,
             g_hits.push_back(HitBlock{r, it->second});
 
             t->PushAxisAlignedClip(r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            const bool summary = block.summary;
             const std::wstring title =
-                block.summary ? shortTitle(e) : toWide(e.title);
-            const bool tall = blockH >= 44.0f;
+                summary ? shortTitle(e) : toWide(e.title);
+            const bool tall = blockH >= 40.0f;
             float ty = r.top + 4.0f;
-            DrawTextLine(t, title,
-                         D2D1::RectF(r.left + 10.0f, ty, r.right - 6.0f,
-                                     ty + 17.0f),
-                         g_fmtTime, sb.text);
-            ty += 17.0f;
-            if (tall && !block.summary) {
-                DrawTextLine(t, spanText(e),
-                             D2D1::RectF(r.left + 10.0f, ty, r.right - 6.0f,
-                                         ty + 14.0f),
-                             g_fmtStatus, sb.dim);
-                ty += 14.0f;
-                // 地点优先（标题已是课程名，避免重复）；无地点才显示教师。
+            DrawTextEllipsis(t, title,
+                             D2D1::RectF(r.left + 8.0f, ty, r.right - 5.0f,
+                                         ty + 16.0f),
+                             g_fmtTitle, sb.text);
+            ty += 16.0f;
+            if (tall && !summary) {
+                // 时间 + 地点合并一行，信息密度更高；块再高才分行显示。
                 const std::wstring meta = !e.location.empty()
                                               ? toWide(e.location)
                                               : toWide(e.teacher);
-                if (!meta.empty() && r.bottom - ty > 13.0f) {
-                    DrawTextLine(t, meta,
-                                 D2D1::RectF(r.left + 10.0f, ty, r.right - 6.0f,
-                                             ty + 13.0f),
-                                 g_fmtStatus, sb.faint);
+                if (blockH >= 62.0f && !meta.empty()) {
+                    DrawTextEllipsis(t, spanText(e),
+                                     D2D1::RectF(r.left + 8.0f, ty,
+                                                 r.right - 5.0f, ty + 14.0f),
+                                     g_fmtTime, sb.dim);
+                    ty += 14.0f;
+                    DrawTextEllipsis(t, meta,
+                                     D2D1::RectF(r.left + 8.0f, ty,
+                                                 r.right - 5.0f, ty + 13.0f),
+                                     g_fmtTime, sb.faint);
+                } else {
+                    std::wstring line = spanText(e);
+                    if (!meta.empty()) line += L" · " + meta;
+                    DrawTextEllipsis(t, line,
+                                     D2D1::RectF(r.left + 8.0f, ty,
+                                                 r.right - 5.0f, ty + 14.0f),
+                                     g_fmtTime, sb.dim);
                 }
             }
             t->PopAxisAlignedClip();
+        }
+    }
+
+    // 当前时间指示线（仅今天列）。
+    const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
+    if (now >= today && now < today + kDaySeconds) {
+        const std::int64_t nowSec = now - today;
+        if (nowSec >= dayStartHour * 3600 &&
+            nowSec <= (dayStartHour + daySpanHours) * 3600) {
+            const std::int64_t d = (today - g_weekBase) / kDaySeconds;
+            if (d >= 0 && d < 7) {
+                const float cx = axisW + d * colW;
+                const float yy = secToY(nowSec);
+                t->DrawLine(D2D1::Point2F(cx + 2.0f, yy),
+                            D2D1::Point2F(cx + colW - 2.0f, yy), sb.now, 1.6f);
+                t->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + 2.0f, yy),
+                                             4.0f, 4.0f),
+                               sb.now);
+            }
         }
     }
 }
@@ -643,7 +772,7 @@ void RenderMonthView(ID2D1RenderTarget* t, const SolidBrushes& sb,
     const std::tm first = localTm(g_monthBase);
     const int lead = (first.tm_wday + 6) % 7;
     const std::int64_t gridBase = g_monthBase - lead * kDaySeconds;
-    const float headH = 30.0f;
+    const float headH = 38.0f;
     const float y0 = kTopBarH + headH;
     const float colW = (size.width - 28.0f) / 7.0f;
     const float rowH = (size.height - kStatusBarH - y0 - 8.0f) / 6.0f;
@@ -653,7 +782,7 @@ void RenderMonthView(ID2D1RenderTarget* t, const SolidBrushes& sb,
 
     for (int d = 0; d < 7; ++d) {
         DrawTextLine(t, kWeek[d],
-                     D2D1::RectF(14.0f + d * colW, kTopBarH + 4.0f,
+                     D2D1::RectF(14.0f + d * colW, kTopBarH + 12.0f,
                                  14.0f + (d + 1) * colW, y0),
                      g_fmtWeekHead, sb.faint);
     }
@@ -731,40 +860,47 @@ void RenderMonthView(ID2D1RenderTarget* t, const SolidBrushes& sb,
     }
 }
 
-void RenderView() {
+void RenderWindowScene(ID2D1RenderTarget* target) {
     g_hits.clear();
     g_dayHits.clear();
     g_ui.clear();
-    g_target->BeginDraw();
 
     HIGHCONTRASTW contrast{sizeof(HIGHCONTRASTW)};
     SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0);
-    g_glass.begin(g_target,g_hoverX,g_hoverY,g_glassEnabled && !(contrast.dwFlags&HCF_HIGHCONTRASTON));
-    g_glass.background(g_target);
+    g_glass.begin(target,g_hoverX,g_hoverY,g_glassEnabled && !(contrast.dwFlags&HCF_HIGHCONTRASTON));
+    g_glass.background(target);
     SolidBrushes sb;
-    sb.Create(g_target);
-    const D2D1_SIZE_F size=g_target->GetSize();
+    sb.Create(target);
+    const D2D1_SIZE_F size=target->GetSize();
     float agendaW=size.width>=1060 && g_view==ViewMode::Day?280.0f:0;
-    g_target->SetTransform(D2D1::Matrix3x2F::Translation(kSidebar,0));
-    g_target->PushAxisAlignedClip(D2D1::RectF(0,kTopBarH,size.width-kSidebar-agendaW,size.height-kStatusBarH),D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    auto cs=D2D1::SizeF(size.width-kSidebar-agendaW,size.height);
-    if(g_view==ViewMode::Day)RenderDayScene(g_target,sb,0,kTopBarH,cs.width,g_dayBase,static_cast<float>(g_scrollY),&g_hits);
-    else if(g_view==ViewMode::Week)RenderWeekView(g_target,sb,cs);
-    else RenderMonthView(g_target,sb,cs);
-    g_target->PopAxisAlignedClip();
-    g_target->SetTransform(D2D1::Matrix3x2F::Identity());
+    FillSurface(target,D2D1::RectF(kSidebar+14,kTopBarH+6,size.width-agendaW-14,
+        size.height-kStatusBarH-12),Clr(.98f,.99f,1,.94f),24);
+    const float contentX=kSidebar+20;
+    target->SetTransform(D2D1::Matrix3x2F::Translation(contentX,0));
+    auto cs=D2D1::SizeF(size.width-kSidebar-agendaW-40,size.height-16);
+    target->PushAxisAlignedClip(D2D1::RectF(0,kTopBarH+6,cs.width,cs.height-kStatusBarH),D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    if(g_view==ViewMode::Day)RenderDayScene(target,sb,0,kTopBarH+14,cs.width,g_dayBase,static_cast<float>(g_scrollY),&g_hits);
+    else if(g_view==ViewMode::Week)RenderWeekView(target,sb,cs);
+    else RenderMonthView(target,sb,cs);
+    target->PopAxisAlignedClip();
+    target->SetTransform(D2D1::Matrix3x2F::Identity());
     for(auto& hit:g_hits) {
-        hit.rect.left+=kSidebar;hit.rect.right+=kSidebar;
-        hit.rect.top=(std::max)(hit.rect.top,kTopBarH);
-        hit.rect.bottom=(std::min)(hit.rect.bottom,size.height-kStatusBarH);
+        hit.rect.left+=contentX;hit.rect.right+=contentX;
+        hit.rect.top=(std::max)(hit.rect.top,kTopBarH+6);
+        hit.rect.bottom=(std::min)(hit.rect.bottom,cs.height-kStatusBarH);
     }
-    for(auto& hit:g_dayHits){hit.rect.left+=kSidebar;hit.rect.right+=kSidebar;}
-    RenderTopBar(g_target,sb,size);
-    if(agendaW>0)RenderAgenda(g_target,sb,size);
-    RenderStatusBar(g_target,sb,size);
+    for(auto& hit:g_dayHits){hit.rect.left+=contentX;hit.rect.right+=contentX;}
+    RenderTopBar(target,sb,size);
+    if(agendaW>0)RenderAgenda(target,sb,size);
+    RenderStatusBar(target,sb,size);
 
-    const HRESULT hr = g_target->EndDraw();
     sb.Release();
+}
+
+void RenderView() {
+    g_target->BeginDraw();
+    RenderWindowScene(g_target);
+    const HRESULT hr = g_target->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         g_glass.reset();
         g_target->Release();
@@ -847,15 +983,15 @@ bool ExportDayViewPng(const std::wstring& path) {
 }
 
 // 导出周视图 PNG（调试/验证用，与日视图导出同机制）。
-bool ExportWeekViewPng(const std::wstring& path) {
+bool ExportWeekViewPng(const std::wstring& path, bool fullUI=false, float outputScale=1) {
     if (!g_wic) {
         CoCreateInstance(CLSID_WICImagingFactory, nullptr,
                          CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_wic));
     }
     if (!g_wic) return false;
 
-    const UINT width = 1600;
-    const UINT height = 900;
+    const UINT width = static_cast<UINT>((fullUI?1280:1600)*outputScale);
+    const UINT height = static_cast<UINT>((fullUI?800:900)*outputScale);
 
     IWICBitmap* wicBitmap = nullptr;
     if (FAILED(g_wic->CreateBitmap(width, height,
@@ -866,7 +1002,7 @@ bool ExportWeekViewPng(const std::wstring& path) {
     D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
-                          D2D1_ALPHA_MODE_PREMULTIPLIED));
+                          D2D1_ALPHA_MODE_PREMULTIPLIED),96*outputScale,96*outputScale);
     ID2D1RenderTarget* rt = nullptr;
     if (FAILED(g_factory->CreateWicBitmapRenderTarget(wicBitmap, props, &rt))) {
         wicBitmap->Release();
@@ -878,9 +1014,10 @@ bool ExportWeekViewPng(const std::wstring& path) {
     g_glass.background(rt);
     SolidBrushes sb;
     sb.Create(rt);
-    const D2D1_SIZE_F size = D2D1::SizeF(static_cast<float>(width),
-                                         static_cast<float>(height));
-    RenderWeekView(rt, sb, size);
+    const D2D1_SIZE_F size = D2D1::SizeF(static_cast<float>(width)/outputScale,
+                                         static_cast<float>(height)/outputScale);
+    if(fullUI) RenderWindowScene(rt);
+    else RenderWeekView(rt, sb, size);
     const HRESULT hr = rt->EndDraw();
     sb.Release();
     g_glass.reset();
@@ -972,11 +1109,14 @@ void CreateTarget(HWND hwnd) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
     g_factory->CreateHwndRenderTarget(
-        D2D1::RenderTargetProperties(),
+        D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN,D2D1_ALPHA_MODE_IGNORE),
+            static_cast<float>(GetDpiForWindow(hwnd)),static_cast<float>(GetDpiForWindow(hwnd))),
         D2D1::HwndRenderTargetProperties(
             hwnd, D2D1::SizeU(static_cast<UINT32>(rc.right),
                               static_cast<UINT32>(rc.bottom))),
         &g_target);
+    if(g_target) g_target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 }
 
 void SeedDemoData(const std::shared_ptr<bp::EventStore>& store) {
@@ -1006,8 +1146,94 @@ std::string readFileUtf8(const std::wstring& path) {
     return out;
 }
 
+// 把 UTF-8 字符串（书签脚本）写入系统剪贴板。成功返回 true。
+bool copyTextToClipboard(const std::string& utf8) {
+    const std::wstring wide = toWide(utf8);
+    if (!OpenClipboard(nullptr)) {
+        return false;
+    }
+    EmptyClipboard();
+    const std::size_t bytes = (wide.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (hMem) {
+        void* dst = GlobalLock(hMem);
+        if (dst) {
+            memcpy(dst, wide.c_str(), bytes);
+            GlobalUnlock(hMem);
+        }
+        SetClipboardData(CF_UNICODETEXT, hMem);
+    }
+    CloseClipboard();
+    return hMem != nullptr;
+}
+
+// 复制书签脚本到剪贴板，并弹出提示说明后续步骤。
+void copyBookmarklet(HWND hwnd) {
+    if (!copyTextToClipboard(bp::ui::kBookmarkletJs)) {
+        MessageBoxW(hwnd, L"复制失败，请稍后重试。", L"复制书签", MB_ICONERROR);
+        return;
+    }
+    MessageBoxW(
+        hwnd,
+        L"书签脚本已复制到剪贴板。\n\n"
+        L"接下来（书签就是「收藏夹」里的网址）：\n"
+        L"1. 浏览器按 Ctrl+Shift+B 打开书签栏（收藏栏）\n"
+        L"2. 在书签栏右键 → 「添加网页」，名称随意（如「抓课表」），\n"
+        L"    网址栏粘贴（Ctrl+V）\n"
+        L"3. 登录教务系统进入「课表查询」页，把视图切换到「学期课表」\n"
+        L"    （否则只抓取本周课表），再点该书签下载课表 JSON\n"
+        L"4. 回到本应用，再点「导入课表」→「选择文件」选下载的文件",
+        L"复制书签脚本", MB_OK | MB_ICONINFORMATION);
+}
+
 // 导入教务系统课表：弹文件选择框，解析后写入 store 并刷新。
 void importTimetable(HWND hwnd) {
+    // 先弹引导：让用户选择「选文件」还是「先复制书签脚本抓数据」。
+    // 教务系统登录有验证码、无法全自动，故引导用户用书签半自动抓取 JSON。
+    // 用 TaskDialog 提供清晰的自定义按钮文字。
+    const wchar_t* content =
+        L"导入课表需要一份课表 JSON 文件，获取方式（只需一次）：\n\n"
+        L"① 在浏览器登录教务系统，进入「课表查询」页\n"
+        L"② 把视图切换到「学期课表」（否则只抓取本周课表）\n"
+        L"③ 点「抓课表」书签（书签 = 收藏夹里的网址），自动下载课表 JSON\n"
+        L"④ 回到这里，选择下载的 JSON 文件导入\n\n"
+        L"如果还没装书签，点「复制书签脚本」；\n"
+        L"如果已有 JSON 文件，直接点「选择文件」。";
+    TASKDIALOG_BUTTON buttons[2] = {
+        { 1001, L"选择文件（我已经有 JSON）" },
+        { 1002, L"复制书签脚本（还没有书签）" },
+    };
+    TASKDIALOGCONFIG cfg{};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = hwnd;
+    cfg.pszWindowTitle = L"导入教务系统课表";
+    cfg.pszMainInstruction = L"如何获取课表 JSON？";
+    cfg.pszContent = content;
+    cfg.pszMainIcon = TD_INFORMATION_ICON;
+    cfg.pButtons = buttons;
+    cfg.cButtons = 2;
+    cfg.nDefaultButton = 1001;
+    cfg.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+
+    int clicked = 0;
+    if (FAILED(TaskDialogIndirect(&cfg, &clicked, nullptr, nullptr))) {
+        // 兜底：TaskDialog 不可用时退回普通 MessageBox。
+        const int c = MessageBoxW(
+            hwnd, content, L"导入课表",
+            MB_ICONINFORMATION | MB_YESNOCANCEL);
+        clicked = (c == IDYES) ? 1001 : (c == IDNO) ? 1002 : IDCANCEL;
+    }
+
+    if (clicked == 1002) {
+        // 复制书签脚本。
+        copyBookmarklet(hwnd);
+        return;
+    }
+    if (clicked == IDCANCEL || clicked == 0) {
+        return;
+    }
+    // clicked == 1001：选择文件，沿用原流程。
+
     wchar_t path[MAX_PATH] = L"";
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -1065,24 +1291,87 @@ void importTimetable(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+// 弹窗展示一次平台同步载入的日程明细。
+void showSyncResult(HWND hwnd) {
+    if (!g_connector) return;
+    const std::vector<bp::Event> events = g_connector->takeSyncSnapshot();
+    if (events.empty()) return;
+    // 按开始时间排序，便于阅读。
+    std::vector<bp::Event> sorted = events;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto& a, const auto& b) { return a.start < b.start; });
+    std::wstring msg = L"本次同步共 " + std::to_wstring(sorted.size()) +
+                       L" 项日程：\n\n";
+    constexpr std::size_t kMaxLines = 30;
+    for (std::size_t i = 0; i < sorted.size() && i < kMaxLines; ++i) {
+        const auto& e = sorted[i];
+        const std::tm lt = localTm(e.start);
+        wchar_t date[32];
+        swprintf(date, 32, L"%d月%d日 %02d:%02d", lt.tm_mon + 1, lt.tm_mday,
+                 lt.tm_hour, lt.tm_min);
+        msg += L"· " + toWide(e.title);
+        msg += L"  [" + std::wstring(date) + L"]";
+        if (!e.location.empty()) msg += L"  " + toWide(e.location);
+        if (!e.teacher.empty()) msg += L"  · " + toWide(e.teacher);
+        if (!e.source.empty()) msg += L"  （" + toWide(e.source) + L"）";
+        msg += L"\n";
+    }
+    if (sorted.size() > kMaxLines) {
+        msg += L"\n…以及另外 " +
+               std::to_wstring(sorted.size() - kMaxLines) + L" 项（可在日历中查看）";
+    }
+    // 同步在后台线程完成，主窗口可能已失焦或被别的窗口盖住；
+    // 先把主窗口带到前台，再让弹窗置顶并抢占焦点，确保用户能看到。
+    SetForegroundWindow(hwnd);
+    MessageBoxW(hwnd, msg.c_str(), L"同步完成",
+                MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_GETMINMAXINFO: {
             auto* info=reinterpret_cast<MINMAXINFO*>(lp);
-            info->ptMinTrackSize={1000,640};
+            const float scale=WindowScale(hwnd);
+            info->ptMinTrackSize={static_cast<LONG>(1000*scale),static_cast<LONG>(640*scale)};
             return 0;
         }
-        case WM_MOUSEMOVE:
-            g_hoverX=static_cast<float>(GET_X_LPARAM(lp));
-            g_hoverY=static_cast<float>(GET_Y_LPARAM(lp));
+        case WM_MOUSEMOVE: {
+            g_hoverX=static_cast<float>(GET_X_LPARAM(lp))/WindowScale(hwnd);
+            g_hoverY=static_cast<float>(GET_Y_LPARAM(lp))/WindowScale(hwnd);
+            TRACKMOUSEEVENT tracking{sizeof(TRACKMOUSEEVENT),TME_LEAVE,hwnd,0};
+            TrackMouseEvent(&tracking);
+            SetTimer(hwnd,0x474c,16,nullptr);
             InvalidateRect(hwnd,nullptr,FALSE);
             return 0;
+        }
+        case WM_MOUSELEAVE:
+            g_hoverX=g_hoverY=-1;
+            SetTimer(hwnd,0x474c,16,nullptr);
+            InvalidateRect(hwnd,nullptr,FALSE);
+            return 0;
+        case WM_TIMER:
+            if(wp==0x474c) {
+                if(!g_glass.animating()) KillTimer(hwnd,0x474c);
+                InvalidateRect(hwnd,nullptr,FALSE);
+                return 0;
+            }
+            return DefWindowProcW(hwnd,msg,wp,lp);
         case WM_PAINT: {
             PAINTSTRUCT ps;
             BeginPaint(hwnd, &ps);
             if (!g_target) CreateTarget(hwnd);
             if (g_target && g_fmtTitle) RenderView();
             EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DPICHANGED: {
+            if(g_target) g_target->SetDpi(static_cast<float>(LOWORD(wp)),static_cast<float>(HIWORD(wp)));
+            g_glass.reset();
+            const auto* rect=reinterpret_cast<RECT*>(lp);
+            SetWindowPos(hwnd,nullptr,rect->left,rect->top,rect->right-rect->left,
+                         rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE);
+            updateScrollRange(hwnd);
+            InvalidateRect(hwnd,nullptr,FALSE);
             return 0;
         }
         case WM_SIZE:
@@ -1119,8 +1408,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_LBUTTONDOWN: {
-            const float mx = static_cast<float>(GET_X_LPARAM(lp));
-            const float my = static_cast<float>(GET_Y_LPARAM(lp));
+            const float mx = static_cast<float>(GET_X_LPARAM(lp))/WindowScale(hwnd);
+            const float my = static_cast<float>(GET_Y_LPARAM(lp))/WindowScale(hwnd);
             for (const auto& btn : g_ui) {
                 if (mx < btn.rect.left || mx > btn.rect.right ||
                     my < btn.rect.top || my > btn.rect.bottom) {
@@ -1238,6 +1527,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     if (result <= 32) MessageBoxW(hwnd, (L"浏览器未能打开，请复制此本机地址：\n" + address).c_str(), L"连接账号", MB_OK);
                 }
             }
+            if (msg == kSyncDoneMessage) {
+                showSyncResult(hwnd);
+            }
             updateScrollRange(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -1253,6 +1545,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     auto& registry = bp::api::Registry::instance();
@@ -1260,25 +1553,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     registry.provideStore(store);
     const LPWSTR cmd = GetCommandLineW();
     if (cmd && (wcsstr(cmd, L"--demo") || wcsstr(cmd, L"--export"))) SeedDemoData(store);
-    if (cmd && wcsstr(cmd, L"--export-week")) {
+    if (cmd && (wcsstr(cmd, L"--export-week") || wcsstr(cmd, L"--export-ui"))) {
         // 周视图导出：注入临时演示课程以便验证渲染。
         const std::int64_t week0 = TodayBase();
         std::tm lt = localTm(week0);
         const std::int64_t monday = week0 - ((lt.tm_wday + 6) % 7) * kDaySeconds;
-        struct S { int day; int h0; int m0; int h1; int m1; const char* t; };
+        struct S { int day; int h0; int m0; int h1; int m1; const char* t; const char* loc; };
         const S seeds[] = {
-            {0, 8, 0, 9, 0, "高等数学"},
-            {0, 9, 30, 11, 0, "线性代数"},
-            {0, 13, 0, 15, 0, "操作系统实验"},
-            {1, 8, 0, 9, 30, "大学英语"},
-            {1, 10, 0, 11, 30, "体育"},
-            {2, 9, 0, 10, 0, "数据结构"},
-            {2, 14, 0, 15, 30, "编译原理"},
-            {3, 8, 30, 10, 0, "数据库原理"},
-            {3, 13, 0, 14, 30, "机器学习"},
-            {4, 9, 0, 12, 0, "操作系统"},
-            {5, 10, 0, 11, 30, "社团活动"},
-            {6, 15, 0, 17, 0, "项目答辩"},
+            {0, 8, 0, 9, 0, "高等数学", "一教 301"},
+            {0, 9, 30, 11, 0, "线性代数", "二教 102"},
+            {0, 13, 0, 15, 0, "操作系统实验", "实验楼 B403"},
+            {1, 8, 0, 9, 30, "大学英语", "图书馆 3F"},
+            {1, 10, 0, 11, 30, "体育", "体育馆"},
+            {2, 9, 0, 10, 0, "数据结构", "一教 205"},
+            {2, 14, 0, 15, 30, "编译原理", "二教 208"},
+            {3, 8, 30, 10, 0, "数据库原理", "一教 305"},
+            {3, 13, 0, 14, 30, "机器学习", "三教 401"},
+            {4, 9, 0, 12, 0, "操作系统", "一教 301"},
+            {5, 10, 0, 11, 30, "社团活动", "学生活动中心"},
+            {6, 15, 0, 17, 0, "项目答辩", "实验楼 A201"},
         };
         for (const auto& s : seeds) {
             bp::Event e;
@@ -1288,21 +1581,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             e.end = base + s.h1 * 3600 + s.m1 * 60;
             e.title = s.t;
             e.course = s.t;
+            e.location = s.loc;
             store->add(e);
         }
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(cmd, &argc);
         std::wstring out = L"week-export.png";
         for (int i = 0; i + 1 < argc; ++i) {
-            if (wcscmp(argv[i], L"--export-week") == 0) out = argv[i + 1];
+            if (wcscmp(argv[i], L"--export-week") == 0 || wcscmp(argv[i], L"--export-ui") == 0) out = argv[i + 1];
         }
+        LocalFree(argv);
         g_weekBase = monday;
+        g_dayBase = monday;
+        g_scrollY = 448;
+        auto month=localTm(monday);
+        month.tm_mday=1;
+        g_monthBase=static_cast<std::int64_t>(_mktime64(&month));
+        if(wcsstr(cmd,L"--week")) g_view=ViewMode::Week;
+        if(wcsstr(cmd,L"--month")) g_view=ViewMode::Month;
+        if(wcsstr(cmd,L"--no-glass")) g_glassEnabled=false;
         D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_factory);
         DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
                             __uuidof(IDWriteFactory),
                             reinterpret_cast<IUnknown**>(&g_dwrite));
         CreateTextFormats();
-        const bool ok = ExportWeekViewPng(out);
+        const bool ok = ExportWeekViewPng(out,wcsstr(cmd,L"--export-ui")!=nullptr,wcsstr(cmd,L"--scale-2")?2.0f:1.0f);
         ReleaseTextFormats();
         if (g_factory) g_factory->Release();
         if (g_wic) g_wic->Release();
@@ -1350,9 +1653,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     RegisterClassW(&wc);
 
+    RECT workArea{};
+    SystemParametersInfoW(SPI_GETWORKAREA,0,&workArea,0);
+    const float initialScale=GetDpiForSystem()/96.0f;
+    const int initialWidth=(std::min)(static_cast<int>(1280*initialScale),static_cast<int>(workArea.right-workArea.left-32));
+    const int initialHeight=(std::min)(static_cast<int>(820*initialScale),static_cast<int>(workArea.bottom-workArea.top-32));
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName, L"Better Planner", WS_OVERLAPPEDWINDOW | WS_VSCROLL,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1280, 820, nullptr, nullptr, instance,
+        CW_USEDEFAULT, CW_USEDEFAULT, initialWidth, initialHeight, nullptr, nullptr, instance,
         nullptr);
     if (!hwnd) return 1;
 

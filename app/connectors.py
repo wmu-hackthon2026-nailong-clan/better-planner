@@ -88,15 +88,19 @@ class Syncer:
         self.auth = auth
         self.lock = threading.Lock()
         self.running = False
+        self.active_provider = None
 
-    def start(self):
+    def start(self, provider=None):
+        if provider not in (None, "chaoxing", "zhihuishu"):
+            raise ValueError("不支持的平台")
         if not self.lock.acquire(blocking=False):
             return False
         self.running = True
-        threading.Thread(target=self._run, daemon=True).start()
+        self.active_provider = provider
+        threading.Thread(target=self._run, args=(provider,), daemon=True).start()
         return True
 
-    def _run(self):
+    def _run(self, provider=None):
         try:
             cfg = config()
             cmd = cfg.get("xxt_command") or ["xxt"]
@@ -105,6 +109,8 @@ class Syncer:
             for stream, args, kind in [("学习通课表", ["week", "--json"], "class"),
                                        ("学习通作业", ["hw", "--all-courses", "--json"], "homework"),
                                        ("学习通考试", ["exam", "--json"], "exam")]:
+                if provider == "zhihuishu":
+                    continue
                 try:
                     data = run_json(cmd + args, cfg.get("xxt_cwd"), extra_env=self.auth.environment() if self.auth else {})
                     warnings = []
@@ -118,10 +124,13 @@ class Syncer:
                         if kind == "exam":
                             row = dict(row, status=row.get("answer") or row.get("status") or "")
                         rows.append(normalize(row, "chaoxing", kind))
-                    self.store.merge(rows)
-                    self.store.record_sync(stream, "；".join(warnings) or None)
+                    report = self.store.merge(rows)
+                    report["status"] = "partial" if warnings else "success"
+                    self.store.record_sync(stream, "；".join(warnings) or None, report)
                 except Exception as exc:
                     self.store.record_sync(stream, str(exc))
+            if provider == "chaoxing":
+                return
             try:
                 workdir = ROOT / "data" / "zhs"
                 workdir.mkdir(parents=True, exist_ok=True)
@@ -129,12 +138,22 @@ class Syncer:
                 if not isinstance(data, dict) or not isinstance(data.get("events"), list):
                     raise ValueError("智慧树连接器格式异常")
                 rows = [normalize(r, "zhihuishu") for r in data["events"]]
-                self.store.merge(rows)
-                self.store.record_sync("智慧树任务", "；".join(data.get("errors", [])) or None)
+                aliases = {row["id"]: [normalize(dict(raw, external_id=old["external_id"], kind=old["kind"]), "zhihuishu")["id"]
+                           for old in raw.get("legacy_ids", [])] for raw, row in zip(data["events"], rows)}
+                report = self.store.merge(rows, aliases=aliases)
+                report["courses"] = data.get("courses", [])
+                report["status"] = "partial" if data.get("errors") else "success"
+                self.store.record_sync("智慧树任务", "；".join(data.get("errors", [])) or None, report)
             except Exception as exc:
                 self.store.record_sync("智慧树任务", str(exc))
         except Exception as exc:
             self.store.record_sync("同步配置", str(exc))
+            streams = (["学习通课表", "学习通作业", "学习通考试"] if provider != "zhihuishu" else [])
+            if provider != "chaoxing":
+                streams.append("智慧树任务")
+            for stream in streams:
+                self.store.record_sync(stream, str(exc))
         finally:
             self.running = False
+            self.active_provider = None
             self.lock.release()

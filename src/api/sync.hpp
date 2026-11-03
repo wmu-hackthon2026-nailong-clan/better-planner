@@ -48,6 +48,10 @@ SyncResult syncChaoxing(const SyncConfig& config);
 // 同步智慧树：调用 zhs_readonly.py 拉取作业/考试。
 SyncResult syncZhihuishu(const SyncConfig& config);
 
+// 解析智慧树 events 协议 JSON（书签脚本导出的文件或连接器输出），
+// 归一化为 Event 列表；供「导入智慧树考试 JSON」复用。
+std::vector<Event> parseZhsEvents(const std::string& json);
+
 // 依次同步两个平台，把结果写入 store，进度经 onPlatform 回调。
 // 返回各平台汇总；调用方负责线程与 UI 刷新。
 void syncAll(const SyncConfig& config, std::shared_ptr<bp::EventStore> store,

@@ -59,6 +59,8 @@ struct DesktopConnector::Impl {
     std::atomic<bool> stopping{false}, alive{false}, pendingOpen{false};
     mutable std::mutex mutex;
     std::wstring url, message = L"点击“连接与同步”登录学习通或智慧树";
+    std::vector<Event> lastSyncEvents_;  // 最近一次同步载入的事件快照（供 UI 弹窗）
+    bool firstState_ = true;  // 启动后首条 state 是「恢复已保存日历」，不算主动同步
 
     void notify(std::wstring text) {
         { std::lock_guard lock(mutex); message = std::move(text); }
@@ -79,6 +81,7 @@ struct DesktopConnector::Impl {
         }
         if (data.at("type") != "state") return;
         std::vector<Event> events;
+        std::size_t skippedClasses = 0;
         for (const auto& row : data.at("events")) {
             Event e;
             e.externalId = row.at("id").get<std::string>();
@@ -94,14 +97,34 @@ struct DesktopConnector::Impl {
             e.teacher = row.value("teacher", "");
             e.url = row.value("url", "");
             e.done = row.value("done", false);
+            // 学习通的课表（class→Schedule）与教务系统导入的课表是同一批课程，
+            // 无需重复导入：学习通同步时一律跳过课表，仅保留作业与考试。
+            if (e.source == "学习通" && e.kind == Kind::Schedule) {
+                ++skippedClasses;
+                continue;
+            }
             events.push_back(std::move(e));
         }
+        // 保存本次载入的事件快照，供 UI 展示"同步了哪些日程"。
+        // 但首条 state 是启动时「恢复已保存的日历」，并非用户主动同步，
+        // 不应弹「同步完成」，故不填充快照（takeSyncSnapshot 返回空→不弹窗）。
+        {
+            std::lock_guard lock(mutex);
+            if (!firstState_) {
+                lastSyncEvents_ = events;
+            }
+        }
+        firstState_ = false;
         store->mergeImported(std::move(events));
         bool failed = false;
         for (const auto& row : data.at("sync")) if (!row.at("error").is_null()) failed = true;
         std::wstring text = data.value("running", false) ? L"平台同步中…可在连接页查看进度" :
             (failed ? L"部分同步未成功 · 点击“连接与同步”查看原因并重试" :
-            L"已载入 " + std::to_wstring(data.at("events").size()) + L" 项平台日程 · 连接页可登录与同步");
+            L"已载入 " + std::to_wstring(events.size()) + L" 项平台日程 · 连接页可登录与同步");
+        if (skippedClasses > 0) {
+            text += L" · 已跳过 " + std::to_wstring(skippedClasses) +
+                    L" 节学习通课表（教务系统已导入）";
+        }
         if (data.value("undated", 0) > 0) text += L" · 无日期任务请在连接页查看";
         notify(text);
     }
@@ -181,6 +204,7 @@ void DesktopConnector::start() {
     if (impl_->thread.joinable()) impl_->thread.join();
     impl_->stopping = false;
     impl_->alive = true;
+    impl_->firstState_ = true;  // 每次（重新）启动后首条 state 视为「恢复日历」
     impl_->thread = std::thread([this] { impl_->run(); });
 }
 void DesktopConnector::requestOpen() { impl_->pendingOpen = true; start(); if (impl_->onChange) impl_->onChange(); }
@@ -190,5 +214,9 @@ std::wstring DesktopConnector::takeOpenUrl() {
     return impl_->url;
 }
 std::wstring DesktopConnector::status() const { std::lock_guard lock(impl_->mutex); return impl_->message; }
+std::vector<Event> DesktopConnector::takeSyncSnapshot() {
+    std::lock_guard lock(impl_->mutex);
+    return std::move(impl_->lastSyncEvents_);
+}
 void DesktopConnector::stop() { impl_->stopping = true; if (impl_->thread.joinable()) impl_->thread.join(); }
 }

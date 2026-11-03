@@ -400,6 +400,45 @@ SyncResult syncChaoxing(const SyncConfig& config) {
     return result;
 }
 
+// 把智慧树 events 协议 JSON（{"events":[{kind,title,course,start,deadline,
+// completed,url,external_id}], "errors":[]}）归一化为 Event 列表。
+// 同时被 syncZhihuishu 与「导入智慧树考试 JSON」两条路径复用。
+std::vector<Event> parseZhsEvents(const std::string& json) {
+    std::vector<Event> events;
+    const FlatJson root(json);
+    const std::vector<std::string> items = root.getArray("events");
+    for (const std::string& item : items) {
+        const FlatJson row(item);
+        Event event;
+        event.source = "智慧树";
+        event.title = row.getString("title");
+        if (event.title.empty()) {
+            event.title = row.getString("examName");
+        }
+        if (event.title.empty()) {
+            continue;
+        }
+        const std::string startText = row.getString("start");
+        const std::string deadlineText = row.getString("deadline");
+        event.start = parseTime(startText);
+        event.end = parseTime(deadlineText);
+        if (event.start == 0 && event.end != 0) {
+            event.start = event.end;
+        }
+        event.kind = (event.start != 0 && event.start != event.end)
+                         ? Kind::Schedule
+                         : Kind::Deadline;
+        event.course = row.getString("course");
+        event.url = row.getString("url");
+        event.done = row.getBool("completed");
+        event.externalId = row.getString("external_id");
+        if (event.start != 0 || event.end != 0) {
+            events.push_back(event);
+        }
+    }
+    return events;
+}
+
 SyncResult syncZhihuishu(const SyncConfig& config) {
     SyncResult result;
     result.platform = "智慧树";
@@ -418,37 +457,7 @@ SyncResult syncZhihuishu(const SyncConfig& config) {
         result.error = "连接器无输出";
         return result;
     }
-    const FlatJson root(json);
-    const std::vector<std::string> items = root.getArray("events");
-    for (const std::string& item : items) {
-        const FlatJson row(item);
-        Event event;
-        event.source = "智慧树";
-        event.title = row.getString("title");
-        if (event.title.empty()) {
-            event.title = row.getString("examName");
-        }
-        if (event.title.empty()) {
-            continue;
-        }
-        const std::string kind = row.getString("kind");
-        const std::string startText = row.getString("start");
-        const std::string deadlineText = row.getString("deadline");
-        event.start = parseTime(startText);
-        event.end = parseTime(deadlineText);
-        if (event.start == 0 && event.end != 0) {
-            event.start = event.end;
-        }
-        event.kind = (event.start != 0 && event.start != event.end)
-                         ? Kind::Schedule
-                         : Kind::Deadline;
-        event.course = row.getString("course");
-        event.url = row.getString("url");
-        event.done = row.getBool("completed");
-        if (event.start != 0 || event.end != 0) {
-            result.events.push_back(event);
-        }
-    }
+    result.events = parseZhsEvents(json);
     return result;
 }
 

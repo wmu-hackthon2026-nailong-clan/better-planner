@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>账号与同步 · Better Planner</title><link rel="stylesheet" href="/connections.css"><script defer src="/connections.js"></script></head>
+<body><main>
+<header><span class="brand">B</span><div><p class="eyebrow">BETTER PLANNER</p><h1>连接账号，让日程自动归位</h1><p>在本机完成登录。同步完成后，课程和截止事项会自动出现在桌面日历。</p></div></header>
+<p id="notice" role="status" aria-live="polite">正在检查连接环境…</p>
+<section class="platforms">
+<article><div class="platform-title"><span class="icon orange">学</span><div><h2>学习通</h2><p>当前周与下周课表 · 作业 · 考试</p></div></div>
+<p id="chaoxing-status" class="status" role="status">尚未登录；已有会话可直接尝试同步。</p>
+<form id="chaoxing-login"><label>手机号<input name="phone" autocomplete="username" inputmode="tel" maxlength="40" required placeholder="学习通账号"></label><label>密码<input name="password" type="password" autocomplete="current-password" maxlength="500" required placeholder="输入密码"></label><label class="check"><input name="remember" type="checkbox">记住账号密码（Windows 加密，仅本用户可用）</label><button type="submit">登录学习通</button></form>
+<button id="chaoxing-sync" class="secondary" type="button">同步学习通</button><p id="chaoxing-result" class="result" role="status"></p><a href="#history">查看同步明细 ↓</a>
+</article>
+<article><div class="platform-title"><span class="icon green">知</span><div><h2>智慧树 · 知到</h2><p>共享课与 AI 知识图谱任务 · AI 课程进度</p></div></div>
+<p id="zhihuishu-status" class="status" role="status">使用知到 App 扫码登录；已有会话可直接尝试同步。</p>
+<div class="qr-box"><img id="qr-image" hidden alt="请使用知到 App 扫描此登录二维码"><p id="qr-hint">点击下方按钮获取二维码<br>在知到 App 中确认登录</p></div>
+<button id="zhihuishu-login" type="button">获取登录二维码</button><button id="zhihuishu-sync" class="secondary" type="button">同步智慧树</button><p id="zhihuishu-result" class="result" role="status"></p><a href="#history">查看同步明细 ↓</a>
+</article></section>
+<section class="history"><h2>本次同步了什么</h2><p>按数据类型展示最近一次结果。展开明细核对课程、时间和地点；失败时保留历史数据，不计作本次成功。</p><div id="history">尚未同步</div></section>
+<section class="history"><h2>本地已保存的课程与任务</h2><p>包含历史同步数据。标为“可进入日历”的记录已有日期；请在桌面切换到对应日期核对。此处不代表已经与平台完整课程清单核验一致。</p>
+<div class="inventory-filters"><label>平台<select id="inventory-provider"><option value="">全部平台</option><option value="chaoxing">学习通</option><option value="zhihuishu">智慧树</option></select></label><label>搜索课程或标题<input id="inventory-search" type="search" placeholder="例如：英语"></label></div>
+<p id="inventory-count" role="status"></p><div id="inventory"></div></section>
+<section id="undated-section" class="history" hidden><h2>日期待定的任务</h2><p>平台未提供截止时间，因此暂不放进日历。</p><div id="undated"></div></section>
+<footer>密码不会出现在命令行或同步日志中。桌面应用关闭后，此连接页面停止服务。</footer>
+</main></body></html>

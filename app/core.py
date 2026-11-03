@@ -83,6 +83,8 @@ class Store:
                     stream TEXT PRIMARY KEY, success_at TEXT, attempted_at TEXT, error TEXT
                 );
             ''')
+            if "report" not in {r[1] for r in db.execute("PRAGMA table_info(sync_state)")}:
+                db.execute("ALTER TABLE sync_state ADD COLUMN report TEXT")
 
     @contextmanager
     def connect(self):
@@ -94,27 +96,51 @@ class Store:
         finally:
             db.close()
 
-    def merge(self, rows):
+    def merge(self, rows, aliases=None):
         stamp = now().isoformat(timespec="seconds")
+        unique = {row["id"]: row for row in rows}
+        report = dict(received=len(rows), added=0, updated=0, unchanged=0, items=[])
         with self.connect() as db:
-            for row in rows:
-                values = dict(row, updated_at=stamp)
+            for row in unique.values():
+                previous = db.execute("SELECT * FROM events WHERE id=?", (row["id"],)).fetchone()
+                # Adopt known legacy adapter identities without losing local completion.
+                local_done = previous["local_done"] if previous else 0
+                for old_id in (aliases or {}).get(row["id"], []):
+                    if old_id == row["id"]:
+                        continue
+                    old = db.execute("SELECT * FROM events WHERE id=?", (old_id,)).fetchone()
+                    if old and all(old[k] == row[k] for k in ("source", "course", "title")):
+                        local_done = max(local_done, old["local_done"])
+                        if previous is None:
+                            previous = old
+                        db.execute("DELETE FROM events WHERE id=?", (old_id,))
+                change = "added" if previous is None else (
+                    "updated" if any(previous[k] != v for k, v in row.items()) else "unchanged")
+                report[change] += 1
+                report["items"].append(dict(row, change=change,
+                    calendar=bool(row["end"] and (row["kind"] != "class" or row["start"]))))
+                values = dict(row, updated_at=stamp, local_done=local_done)
                 keys = list(values)
                 db.execute(f"INSERT INTO events({','.join(keys)}) VALUES({','.join(':'+k for k in keys)}) "
                            f"ON CONFLICT(id) DO UPDATE SET {','.join(k+'=excluded.'+k for k in keys if k != 'id')}", values)
+        return report
 
-    def record_sync(self, stream, error=None):
+    def record_sync(self, stream, error=None, report=None):
         stamp = now().isoformat(timespec="seconds")
         with self.connect() as db:
-            db.execute('''INSERT INTO sync_state VALUES(?,?,?,?) ON CONFLICT(stream) DO UPDATE SET
+            db.execute('''INSERT INTO sync_state(stream,success_at,attempted_at,error,report) VALUES(?,?,?,?,?) ON CONFLICT(stream) DO UPDATE SET
                 attempted_at=excluded.attempted_at, error=excluded.error,
+                report=excluded.report,
                 success_at=COALESCE(excluded.success_at, sync_state.success_at)''',
-                       (stream, None if error else stamp, stamp, error))
+                       (stream, None if error else stamp, stamp, error,
+                        json.dumps(report, ensure_ascii=False) if report is not None else None))
 
     def state(self):
         with self.connect() as db:
             rows = [dict(r) for r in db.execute("SELECT * FROM events ORDER BY COALESCE(end,start,'9999'),title")]
             sync = [dict(r) for r in db.execute("SELECT * FROM sync_state ORDER BY stream")]
+        for row in sync:
+            row["report"] = json.loads(row["report"]) if row["report"] else None
         for r in rows:
             r["completed"] = bool(r["local_done"] or r["platform_done"])
         return dict(events=rows, sync=sync, now=now().isoformat(), timezone="Asia/Shanghai")

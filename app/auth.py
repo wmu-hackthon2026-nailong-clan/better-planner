@@ -111,14 +111,18 @@ class AuthManager:
             process.stdin.write(json.dumps(body, ensure_ascii=False) + "\n")
             process.stdin.close()
             succeeded = False
+            success_result = None
             for line in process.stdout:
                 result = json.loads(line)
                 if result.get("status") == "qr":
                     raw = base64.b64decode(result["image"], validate=True)
                     if len(raw) > 1_000_000:
                         raise ValueError("二维码过大")
-                with self.lock:
-                    self.jobs[provider] = result
+                if result.get("status") == "success":
+                    success_result = result
+                else:
+                    with self.lock:
+                        self.jobs[provider] = result
                 succeeded = result.get("status") == "success"
             process.wait()
             if process.returncode or not succeeded:
@@ -134,6 +138,8 @@ class AuthManager:
                     path.write_bytes(crypt(json.dumps(self.memory).encode()))
                 elif path.exists():
                     path.unlink()
+            with self.lock:
+                self.jobs[provider] = success_result
         except FileNotFoundError:
             with self.lock:
                 self.jobs[provider] = {"status": "error", "message": "连接器未安装；请使用包含运行环境的完整启动包。"}

@@ -9,7 +9,7 @@ DATA = ROOT / "data" / "xxt"
 
 
 def schedule_window(cli, today=None):
-    """Expand this and next teaching week from the upstream full-term schedule."""
+    """Expand the current week through the end of term from the full-term schedule."""
     from xuexitong_mcp.client import expand_weeks
     today = today or date.today()
     sc = cli._cached_schedule()
@@ -22,7 +22,7 @@ def schedule_window(cli, today=None):
     maximum = int(sc.get('curriculum', {}).get('maxWeek') or 30)
     times = cli._lesson_times(sc)
     output = []
-    for week in range(current, min(current + 1, maximum) + 1):
+    for week in range(current, maximum + 1):
         monday = term_start + timedelta(weeks=week - 1) if term_start else today - timedelta(days=today.weekday()) + timedelta(weeks=week - current)
         lessons = [lesson for lesson in sc.get('lessons', [])
                    if (week == current if not lesson.get('weeks') else week in expand_weeks(lesson['weeks']))]

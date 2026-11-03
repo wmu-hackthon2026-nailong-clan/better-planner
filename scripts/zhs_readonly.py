@@ -54,55 +54,85 @@ def failure_reason(exc):
     return "读取失败，请稍后重试或重新连接账号"
 
 
+def collect_ai_courses(session, events, errors):
+    """Compatibility entry point; uses strict, independently queried AI lists."""
+    try:
+        from scripts.zhs_ai_readonly import collect_ai
+    except ModuleNotFoundError:
+        from zhs_ai_readonly import collect_ai
+    result = collect_ai(session)
+    events.extend(result["events"])
+    errors.extend(result["errors"])
+    return result["courses"]
+
+
+def collect_shared(session):
+    from zhs.zhidao.course import ZhidaoCourseManager
+    from zhs.zhidao.models import extract_course_id
+    events, errors = [], []
+    courses = ZhidaoCourseManager(session).get_course_list()
+    session.exam_sso_login()
+    for c in courses:
+        cid = extract_course_id(c)
+        rid = str(c.recruit_id or "")
+        name = c.course_name or str(cid)
+        if not cid or not rid:
+            errors.append(f"{name} 缺少课程注册信息")
+            continue
+        for flag in (1, 2):
+            try:
+                for item in homework_pages(session, cid, rid, flag):
+                    events.append({"external_id": f"{cid}:hw:{item['id']}", "kind": "homework",
+                                   "title": item["examName"], "course": name,
+                                   "start": item.get("startTime"), "deadline": item.get("endDate"),
+                                   "completed": flag == 2, "url": "https://onlineexamh5new.zhihuishu.com/"})
+            except Exception as exc:
+                errors.append(f"{name} {'待交' if flag == 1 else '已交'}作业：{failure_reason(exc)}")
+        # Each list is independent; one failure must not skip another list.
+        for flag in (1, 0):
+            try:
+                batch = session.exam_list(cid, rid, flag=flag)
+                if not isinstance(batch, list):
+                    raise RuntimeError("考试列表格式异常")
+                for item in batch:
+                    events.append({"external_id": f"{cid}:exam:{item['id']}", "kind": "exam",
+                                   "title": item["examName"], "course": name,
+                                   "start": item.get("startTime"), "deadline": item.get("endDate"),
+                                   "completed": flag == 0, "url": "https://onlineexamh5new.zhihuishu.com/"})
+            except Exception as exc:
+                errors.append(f"{name} {'未完成' if flag == 1 else '已完成'}考试：{failure_reason(exc)}")
+        time.sleep(0.8)
+    return {"events": events, "errors": errors, "courses": [
+        {"name": c.course_name or str(extract_course_id(c)), "system": "共享课", "course_id": str(extract_course_id(c))} for c in courses]}
+
+
 def collect():
     from zhs.config import ConfigManager
     from zhs.session import ZhsSession
     from zhs.utils.cookie import list_to_cookies
     from zhs.utils.path import get_data_dir
-    from zhs.zhidao.course import ZhidaoCourseManager
-    from zhs.zhidao.models import extract_course_id
-
     cfg = ConfigManager().load()
     cookie_path = get_data_dir() / "cookies.json"
     if not cookie_path.exists():
         raise LoginRequired("请在页面连接智慧树")
     session = ZhsSession(cfg)
-    events, errors = [], []
     try:
-        session.cookies = list_to_cookies(json.loads(cookie_path.read_text(encoding="utf-8")))
-        courses = ZhidaoCourseManager(session).get_course_list()
-        session.exam_sso_login()
-        for c in courses:
-            cid = extract_course_id(c)
-            rid = str(c.recruit_id or "")
-            name = c.course_name or str(cid)
-            if not cid or not rid:
-                errors.append(f"{name} 缺少课程注册信息")
-                continue
-            for flag in (1, 2):
-                try:
-                    for item in homework_pages(session, cid, rid, flag):
-                        events.append({"external_id": f"{cid}:hw:{item['id']}", "kind": "homework",
-                                       "title": item["examName"], "course": name,
-                                       "start": item.get("startTime"), "deadline": item.get("endDate"),
-                                       "completed": flag == 2, "url": "https://onlineexamh5new.zhihuishu.com/"})
-                except Exception as exc:
-                    errors.append(f"{name} {'待交' if flag == 1 else '已交'}作业：{failure_reason(exc)}")
-            # Each list is independent; one failure must not skip another list.
-            for flag in (1, 0):
-                try:
-                    batch = session.exam_list(cid, rid, flag=flag)
-                    if not isinstance(batch, list):
-                        raise RuntimeError("考试列表格式异常")
-                    for item in batch:
-                        events.append({"external_id": f"{cid}:exam:{item['id']}", "kind": "exam",
-                                       "title": item["examName"], "course": name,
-                                       "start": item.get("startTime"), "deadline": item.get("endDate"),
-                                       "completed": flag == 0, "url": "https://onlineexamh5new.zhihuishu.com/"})
-                except Exception as exc:
-                    errors.append(f"{name} {'未完成' if flag == 1 else '已完成'}考试：{failure_reason(exc)}")
-            time.sleep(0.8)
-        return {"events": events, "errors": errors}
+        saved_cookies = json.loads(cookie_path.read_text(encoding="utf-8"))
+        session.cookies = list_to_cookies(saved_cookies)
+        try:
+            shared = collect_shared(session)
+        except Exception as exc:
+            shared = {"events": [], "courses": [], "errors": ["共享课：" + failure_reason(exc)]}
+        # Shared-course exam SSO mutates the session cookie jar. AI uses its own
+        # original login session so a shared SSO change cannot hide AI courses.
+        ai_session = ZhsSession(cfg)
+        try:
+            ai_session.cookies = list_to_cookies(saved_cookies)
+            courses = collect_ai_courses(ai_session, shared["events"], shared["errors"])
+        finally:
+            ai_session.close()
+        shared["courses"].extend(courses)
+        return shared
     finally:
         session.close()
 
