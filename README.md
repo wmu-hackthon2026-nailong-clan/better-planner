@@ -1,4 +1,4 @@
-# 课期 Keqi
+# better planner
 
 > 桌面主线：`build/better_planner.exe`。工具栏“连接与同步”打开本机账号页，支持学习通账号密码登录与智慧树扫码登录；同步后的日程自动回填桌面。首次安装连接环境运行 `python scripts/setup_desktop.py`。详见 [桌面登录同步](docs/DESKTOP_SYNC.md)、[液态玻璃实现](docs/LIQUID_GLASS.md)、[代码签名](docs/SIGNING.md)。下文保留原 Python 网页版说明。
 
