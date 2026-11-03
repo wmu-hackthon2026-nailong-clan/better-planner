@@ -1,7 +1,11 @@
-"""Read list endpoints through a separately installed pjm314159/zhs.
+"""Read list endpoints through a separately installed pjm314159/zhs
+(https://github.com/pjm314159/zhs, GPL-3.0).
 
-Keep stdout as a JSON protocol; upstream logs/prints are redirected to stderr.
-No homework/exam context, worker, openExam, doHomework or submit calls.
+The shared-course and AI-course queries rely on that project's session helpers
+and its AES keys, which are community-derived rather than an official
+Zhihuishu public API. Keep stdout as a JSON protocol; upstream logs/prints are
+redirected to stderr. No homework/exam context, worker, openExam, doHomework
+or submit calls.
 """
 import contextlib
 import json

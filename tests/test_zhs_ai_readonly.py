@@ -1,4 +1,5 @@
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -55,6 +56,25 @@ class AiReadonlyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ai_query(self.session, "stu/studyRecord/completed", {})
         self.session.api_query.assert_not_called()
+
+    def test_request_uses_capture_verified_date_and_encrypted_course_pair(self):
+        from zhs.crypto import Cipher
+        key, iv = b"0123456789abcdef", b"abcdef0123456789"
+        self.session.crypto.key_bytes.side_effect = lambda name: key if name == "ai_key" else iv
+        self.session.api_query.return_value = {"code": 200, "data": []}
+        params = {"courseId": self.course["courseId"], "classId": "260439"}
+        ai_query(self.session, EXAMS, params)
+        url, body = self.session.api_query.call_args.args
+        self.assertTrue(url.endswith(EXAMS))
+        self.assertEqual(set(body), {"date", "secretStr"})
+        self.assertEqual(json.loads(Cipher(key, iv).decrypt(body["secretStr"])), params)
+        self.assertEqual(self.session.api_query.call_args.kwargs["content_type"], "json")
+
+    def test_missing_success_code_is_not_a_successful_empty_task_list(self):
+        self.session.crypto.key_bytes.return_value = b"0123456789abcdef"
+        self.session.api_query.return_value = {"data": []}
+        with self.assertRaises(RuntimeError):
+            ai_query(self.session, TASKS, {})
 
 
 if __name__ == "__main__":

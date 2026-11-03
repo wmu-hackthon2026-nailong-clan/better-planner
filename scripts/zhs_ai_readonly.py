@@ -1,7 +1,11 @@
 """AI knowledge-map course discovery and read-only task/progress lists.
 
-Protocol verified against the official student frontend and captured responses.
-Never requests exam papers, starts exams, or sends learning/completion records.
+The request encryption (AES key ``ai_key``/``iv``) and the ``zhs`` session
+helpers come from the open-source project pjm314159/zhs
+(https://github.com/pjm314159/zhs, GPL-3.0), NOT from any official Zhihuishu
+public API. This module only uses its read-only course/task/exam-list queries;
+it never requests exam papers, starts exams, or sends learning/completion
+records.
 """
 import json
 import time

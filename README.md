@@ -2,7 +2,7 @@
 
 > 桌面主线：`build/better_planner.exe`。工具栏“连接与同步”打开本机账号页，支持学习通账号密码登录与智慧树扫码登录；同步后的日程自动回填桌面。首次安装连接环境运行 `python scripts/setup_desktop.py`。详见 [桌面登录同步](docs/DESKTOP_SYNC.md)、[液态玻璃实现](docs/LIQUID_GLASS.md)、[代码签名](docs/SIGNING.md)。下文保留原 Python 网页版说明。
 
-本地运行的课表与截止日期汇总工具：将**学习通课表、学习通作业 / 考试、智慧树知到共享课作业 / 考试**汇总到同一个看板。
+本地运行的课表与截止日期汇总工具：将**学习通课表、学习通作业 / 考试、智慧树共享课及 AI 知识图谱任务**汇总到同一个看板。
 
 当前是 Python + 浏览器的本地应用，尚未迁移到 WPF / WinUI。开发检查、提交范围和后续任务见 [CONTRIBUTING.md](CONTRIBUTING.md)。离线测试通过不代表平台在线接口已验证。
 
@@ -76,9 +76,9 @@ xxt exam --json
 
 手动安装时复制 `config.example.json` 为 `config.local.json`，`xxt_command` 填字符串数组，例如 `["C:/.../python.exe", "-m", "xuexitong_mcp.cli"]`，`xxt_cwd` 填上游仓库绝对路径。不要把整个命令写成一个字符串。
 
-### 智慧树：知到共享课作业与考试
+### 智慧树：共享课与 AI 知识图谱
 
-使用 [pjm314159/zhs](https://github.com/pjm314159/zhs) 的会话与查询接口。先运行：
+使用 [pjm314159/zhs](https://github.com/pjm314159/zhs) 的会话与查询接口（GPL-3.0；其中会话加密用的 `ai_key`/`iv` 等参数来自该开源项目，非智慧树官方公开接口）。先运行：
 
 ```powershell
 .\.deps\zhs-env\Scripts\zhs.exe init
@@ -89,7 +89,7 @@ xxt exam --json
 
 本项目的 `scripts/zhs_readonly.py` 只调用课程列表、`getStudentHomework` 和 `exam_list`，不调用答题、开考、提交或刷课功能。作业读取未提交和已提交两组，按原始 `endDate` 汇总截止时间；考试读取未完成和已完成两组。
 
-**当前覆盖范围：知到共享课。AI 智慧课、翻转课 / Hike 尚未自动接入**，请通过手动日程或规范 JSON 导入补充。上游知到考试代码对不同考试域 SSO 有待验证的假设，可能出现作业能读、考试失败的情况；看板会显示部分失败，不能将它当成“没有考试”。
+**当前覆盖范围：知到共享课作业/考试，以及 AI 知识图谱课程发布任务、考试待办和课程知识点进度。翻转课 / Hike 尚未自动接入**。AI 进度在同步明细中展示，不生成虚构日历日期。上游知到考试代码对不同考试域 SSO 有待验证的假设，可能出现作业能读、考试失败的情况；看板会显示部分失败，不能将它当成“没有考试”。
 
 ## 已实现
 
